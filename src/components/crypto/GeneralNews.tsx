@@ -2,10 +2,13 @@ import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Newspaper, ExternalLink, Clock, TrendingUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Newspaper, ExternalLink, Smile, Frown, Meh } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { useNavigate } from "react-router-dom";
 
 const GeneralNews = () => {
+  const navigate = useNavigate();
   const { data: news, isLoading } = useQuery({
     queryKey: ["general-crypto-news"],
     queryFn: async () => {
@@ -42,26 +45,40 @@ const GeneralNews = () => {
     );
   }
 
+  const getSentimentIcon = (sentiment: string) => {
+    switch (sentiment) {
+      case "positive":
+        return <Smile className="w-4 h-4" />;
+      case "negative":
+        return <Frown className="w-4 h-4" />;
+      default:
+        return <Meh className="w-4 h-4" />;
+    }
+  };
+
+  const getSentimentColor = (sentiment: string) => {
+    switch (sentiment) {
+      case "positive":
+        return "border-success text-success";
+      case "negative":
+        return "border-destructive text-destructive";
+      default:
+        return "border-accent text-accent";
+    }
+  };
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {news.map((article: any, index: number) => (
         <Card
           key={index}
-          className="p-6 glass-morphism hover:scale-105 transition-all group cursor-pointer"
-          onClick={() => window.open(article.url, '_blank')}
+          className="p-6 glass-morphism hover:bg-card/80 transition-all group cursor-pointer"
+          onClick={() => navigate(`/news/${index}`, { state: { newsItem: article } })}
         >
           <div className="flex items-start justify-between mb-3">
-            <Badge
-              variant="outline"
-              className={`${
-                article.sentiment === "positive"
-                  ? "border-success text-success"
-                  : article.sentiment === "negative"
-                  ? "border-destructive text-destructive"
-                  : "border-accent text-accent"
-              }`}
-            >
-              {article.sentiment}
+            <Badge variant="outline" className={getSentimentColor(article.sentiment)}>
+              {getSentimentIcon(article.sentiment)}
+              <span className="ml-1 capitalize">{article.sentiment}</span>
             </Badge>
             <ExternalLink className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors" />
           </div>
@@ -75,19 +92,9 @@ const GeneralNews = () => {
           </p>
           
           <div className="flex items-center justify-between text-xs text-muted-foreground pt-3 border-t border-border/50">
-            <div className="flex items-center gap-1">
-              <Clock className="w-3 h-3" />
-              <span>{article.timeAgo}</span>
-            </div>
+            <span>{formatDistanceToNow(new Date(article.published_at), { addSuffix: true })}</span>
             <span className="font-medium">{article.source}</span>
           </div>
-          
-          {article.trending && (
-            <div className="mt-3 flex items-center gap-1 text-xs text-accent">
-              <TrendingUp className="w-3 h-3" />
-              <span>Trending</span>
-            </div>
-          )}
         </Card>
       ))}
     </div>
