@@ -1,12 +1,11 @@
-import { useState } from "react";
-import { TrendingUp, Zap, Activity, Brain } from "lucide-react";
+import { TrendingUp, Zap, Activity } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import CryptoGrid from "@/components/crypto/CryptoGrid";
-import SignalsPanel from "@/components/crypto/SignalsPanel";
-import ExplainableAI from "@/components/crypto/ExplainableAI";
 import MarketOverview from "@/components/crypto/MarketOverview";
+import SearchBar from "@/components/crypto/SearchBar";
 
 const Index = () => {
-  const [selectedCrypto, setSelectedCrypto] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   return (
     <div className="min-h-screen bg-background">
@@ -38,6 +37,9 @@ const Index = () => {
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-8 space-y-8">
+        {/* Search Bar */}
+        <SearchBar />
+
         {/* Market Overview */}
         <MarketOverview />
 
@@ -45,31 +47,10 @@ const Index = () => {
         <section>
           <div className="flex items-center gap-3 mb-6">
             <TrendingUp className="w-6 h-6 text-primary" />
-            <h2 className="text-2xl font-bold">Live Market Data</h2>
+            <h2 className="text-2xl font-bold">Top Cryptocurrencies</h2>
           </div>
-          <CryptoGrid onSelectCrypto={setSelectedCrypto} />
+          <CryptoGrid onSelectCrypto={(id) => navigate(`/analysis/${id}`)} />
         </section>
-
-        {/* AI Analysis Section */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Signals Panel */}
-          <section>
-            <div className="flex items-center gap-3 mb-6">
-              <Zap className="w-6 h-6 text-accent" />
-              <h2 className="text-2xl font-bold">AI Trading Signals</h2>
-            </div>
-            <SignalsPanel selectedCrypto={selectedCrypto} />
-          </section>
-
-          {/* Explainable AI */}
-          <section>
-            <div className="flex items-center gap-3 mb-6">
-              <Brain className="w-6 h-6 text-secondary" />
-              <h2 className="text-2xl font-bold">Signal Explanation</h2>
-            </div>
-            <ExplainableAI selectedCrypto={selectedCrypto} />
-          </section>
-        </div>
       </main>
 
       {/* Footer */}

@@ -11,3 +11,6 @@ verify_jwt = false
 
 [functions.market-overview]
 verify_jwt = false
+
+[functions.fetch-crypto-news]
+verify_jwt = false
