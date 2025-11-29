@@ -1,8 +1,10 @@
-import { TrendingUp, Zap, Activity } from "lucide-react";
+import { TrendingUp, Zap, Activity, Newspaper, Brain } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import CryptoGrid from "@/components/crypto/CryptoGrid";
 import MarketOverview from "@/components/crypto/MarketOverview";
 import SearchBar from "@/components/crypto/SearchBar";
+import GeneralNews from "@/components/crypto/GeneralNews";
+import MarketSentiment from "@/components/crypto/MarketSentiment";
 
 const Index = () => {
   const navigate = useNavigate();
@@ -43,6 +45,11 @@ const Index = () => {
         {/* Market Overview */}
         <MarketOverview />
 
+        {/* AI Market Sentiment */}
+        <section>
+          <MarketSentiment />
+        </section>
+
         {/* Crypto Grid */}
         <section>
           <div className="flex items-center gap-3 mb-6">
@@ -50,6 +57,16 @@ const Index = () => {
             <h2 className="text-2xl font-bold">Top Cryptocurrencies</h2>
           </div>
           <CryptoGrid onSelectCrypto={(id) => navigate(`/analysis/${id}`)} />
+        </section>
+
+        {/* Latest Crypto News */}
+        <section>
+          <div className="flex items-center gap-3 mb-6">
+            <Newspaper className="w-6 h-6 text-accent" />
+            <h2 className="text-2xl font-bold">Latest Crypto News</h2>
+            <span className="text-sm text-muted-foreground">(Live updates)</span>
+          </div>
+          <GeneralNews />
         </section>
       </main>
 

@@ -2,22 +2,48 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Search, Zap } from "lucide-react";
+import { Search, Zap, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 const SearchBar = () => {
   const [searchQuery, setSearchQuery] = useState("");
+  const [isSearching, setIsSearching] = useState(false);
   const navigate = useNavigate();
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     if (!searchQuery.trim()) {
       toast.error("Please enter a cryptocurrency name or symbol");
       return;
     }
     
-    // Convert to lowercase and remove spaces for the coin ID
-    const coinId = searchQuery.toLowerCase().trim().replace(/\s+/g, "-");
-    navigate(`/analysis/${coinId}`);
+    setIsSearching(true);
+    
+    try {
+      // Search CoinGecko to find the correct coin ID
+      const response = await fetch(
+        `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(searchQuery.trim())}`,
+        { headers: { 'Accept': 'application/json' } }
+      );
+      
+      if (!response.ok) {
+        throw new Error("Search failed");
+      }
+      
+      const data = await response.json();
+      
+      if (data.coins && data.coins.length > 0) {
+        // Use the first result's ID
+        const coinId = data.coins[0].id;
+        navigate(`/analysis/${coinId}`);
+      } else {
+        toast.error("Cryptocurrency not found. Try 'bitcoin', 'ethereum', or 'btc'");
+      }
+    } catch (error) {
+      console.error("Search error:", error);
+      toast.error("Failed to search. Please try again.");
+    } finally {
+      setIsSearching(false);
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -42,11 +68,21 @@ const SearchBar = () => {
         </div>
         <Button
           onClick={handleAnalyze}
+          disabled={isSearching}
           size="lg"
-          className="h-12 px-8 bg-gradient-to-r from-primary to-secondary hover:opacity-90 transition-all glow-primary"
+          className="h-12 px-8 bg-gradient-to-r from-primary to-secondary hover:opacity-90 transition-all glow-primary disabled:opacity-50"
         >
-          <Zap className="w-5 h-5 mr-2" />
-          Analyze
+          {isSearching ? (
+            <>
+              <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+              Searching...
+            </>
+          ) : (
+            <>
+              <Zap className="w-5 h-5 mr-2" />
+              Analyze
+            </>
+          )}
         </Button>
       </div>
       <p className="text-xs text-muted-foreground mt-3">
