@@ -2,14 +2,18 @@ import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Newspaper, ExternalLink, Clock } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Newspaper, ExternalLink, Clock, Smile, Frown, Meh } from "lucide-react";
 import { toast } from "sonner";
+import { useNavigate } from "react-router-dom";
+import { formatDistanceToNow } from "date-fns";
 
 interface CoinNewsProps {
   coinName: string;
 }
 
 const CoinNews = ({ coinName }: CoinNewsProps) => {
+  const navigate = useNavigate();
   const { data: news, isLoading } = useQuery({
     queryKey: ["coin-news", coinName],
     queryFn: async () => {
@@ -69,49 +73,64 @@ const CoinNews = ({ coinName }: CoinNewsProps) => {
       </div>
       
       <div className="space-y-4">
-        {news.map((article: any, index: number) => (
-          <a
-            key={index}
-            href={article.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block p-4 rounded-lg border border-border/50 hover:border-primary/50 transition-all hover:bg-card/80 group"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex-1">
-                <h4 className="font-semibold text-foreground group-hover:text-primary transition-colors mb-2">
-                  {article.title}
-                </h4>
-                <p className="text-sm text-muted-foreground line-clamp-2 mb-3">
-                  {article.description}
-                </p>
-                <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                  <div className="flex items-center gap-1">
-                    <Clock className="w-3 h-3" />
-                    <span>{article.timeAgo}</span>
+        {news.map((article: any, index: number) => {
+          const getSentimentIcon = (sentiment: string) => {
+            switch (sentiment) {
+              case "positive":
+                return <Smile className="w-3 h-3" />;
+              case "negative":
+                return <Frown className="w-3 h-3" />;
+              default:
+                return <Meh className="w-3 h-3" />;
+            }
+          };
+
+          const getSentimentColor = (sentiment: string) => {
+            switch (sentiment) {
+              case "positive":
+                return "border-success text-success";
+              case "negative":
+                return "border-destructive text-destructive";
+              default:
+                return "border-accent text-accent";
+            }
+          };
+
+          return (
+            <div
+              key={index}
+              onClick={() => navigate(`/news/${index}`, { state: { newsItem: article } })}
+              className="block p-4 rounded-lg border border-border/50 hover:border-primary/50 transition-all hover:bg-card/80 group cursor-pointer"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1">
+                  <h4 className="font-semibold text-foreground group-hover:text-primary transition-colors mb-2">
+                    {article.title}
+                  </h4>
+                  <p className="text-sm text-muted-foreground line-clamp-2 mb-3">
+                    {article.description}
+                  </p>
+                  <div className="flex items-center gap-3 flex-wrap text-xs text-muted-foreground">
+                    <div className="flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      <span>{formatDistanceToNow(new Date(article.published_at), { addSuffix: true })}</span>
+                    </div>
+                    <Badge variant="outline" className="text-xs border-muted">
+                      {article.source}
+                    </Badge>
+                    {article.sentiment && (
+                      <Badge variant="outline" className={`text-xs ${getSentimentColor(article.sentiment)}`}>
+                        {getSentimentIcon(article.sentiment)}
+                        <span className="ml-1 capitalize">{article.sentiment}</span>
+                      </Badge>
+                    )}
                   </div>
-                  <div className="flex items-center gap-1">
-                    <span className="font-medium">{article.source}</span>
-                  </div>
-                  {article.sentiment && (
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                        article.sentiment === "positive"
-                          ? "bg-success/20 text-success"
-                          : article.sentiment === "negative"
-                          ? "bg-destructive/20 text-destructive"
-                          : "bg-muted text-muted-foreground"
-                      }`}
-                    >
-                      {article.sentiment}
-                    </span>
-                  )}
                 </div>
+                <ExternalLink className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors flex-shrink-0" />
               </div>
-              <ExternalLink className="w-4 h-4 text-muted-foreground group-hover:text-primary transition-colors flex-shrink-0" />
             </div>
-          </a>
-        ))}
+          );
+        })}
       </div>
     </Card>
   );

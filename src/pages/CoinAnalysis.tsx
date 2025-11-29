@@ -124,14 +124,19 @@ const CoinAnalysis = () => {
       {/* Header */}
       <header className="border-b border-border/50 backdrop-blur-xl bg-card/30 sticky top-0 z-50">
         <div className="container mx-auto px-4 py-6">
-          <Button
-            variant="ghost"
-            onClick={() => navigate("/")}
-            className="hover:bg-card"
-          >
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Dashboard
-          </Button>
+          <div className="flex items-center justify-between">
+            <Button
+              variant="ghost"
+              onClick={() => navigate("/")}
+              className="hover:bg-card"
+            >
+              <ArrowLeft className="w-4 h-4 mr-2" />
+              Back to Dashboard
+            </Button>
+            <h2 className="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
+              GlobalCryptoUpdate
+            </h2>
+          </div>
         </div>
       </header>
 
