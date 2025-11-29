@@ -1,0 +1,13 @@
+project_id = "mxrxzlaclormvmqisjnj"
+
+[functions.fetch-crypto-data]
+verify_jwt = false
+
+[functions.generate-signals]
+verify_jwt = false
+
+[functions.explain-signal]
+verify_jwt = false
+
+[functions.market-overview]
+verify_jwt = false
