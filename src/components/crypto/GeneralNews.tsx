@@ -108,16 +108,15 @@ const GeneralNews = () => {
         ))}
       </div>
       
-      {news && news.length > displayCount && (
-        <div className="flex justify-center">
-          <Button 
-            variant="outline" 
-            onClick={() => setDisplayCount(prev => prev + 6)}
-          >
-            Show More News
-          </Button>
-        </div>
-      )}
+      <div className="flex justify-center">
+        <Button 
+          variant="outline" 
+          onClick={() => setDisplayCount(prev => prev + 6)}
+          disabled={!news || displayCount >= news.length}
+        >
+          {displayCount >= (news?.length || 0) ? 'No More News' : 'Show More News'}
+        </Button>
+      </div>
     </div>
   );
 };
