@@ -11,11 +11,11 @@ serve(async (req) => {
   }
 
   try {
-    console.log("Analyzing top cryptocurrencies for best trade today");
+    console.log("Analyzing top 100 cryptocurrencies for best trade today");
 
-    // Fetch top 20 coins
+    // Fetch top 100 coins
     const response = await fetch(
-      'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=20&page=1&sparkline=false&price_change_percentage=24h,7d',
+      'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=100&page=1&sparkline=false&price_change_percentage=24h,7d',
       {
         headers: { 'Accept': 'application/json' },
       }

@@ -140,16 +140,15 @@ const CoinNews = ({ coinName }: CoinNewsProps) => {
           );
         })}
         
-        {news && news.length > displayCount && (
-          <div className="flex justify-center pt-4">
-            <Button 
-              variant="outline" 
-              onClick={() => setDisplayCount(prev => prev + 4)}
-            >
-              Show More News
-            </Button>
-          </div>
-        )}
+        <div className="flex justify-center pt-4">
+          <Button 
+            variant="outline" 
+            onClick={() => setDisplayCount(prev => prev + 4)}
+            disabled={!news || displayCount >= news.length}
+          >
+            {displayCount >= (news?.length || 0) ? 'No More News' : 'Show More News'}
+          </Button>
+        </div>
       </div>
     </Card>
   );
