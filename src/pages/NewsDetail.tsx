@@ -80,7 +80,9 @@ const NewsDetail = () => {
               </Badge>
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Calendar className="w-4 h-4" />
-                {formatDistanceToNow(new Date(newsItem.published_at), { addSuffix: true })}
+                {newsItem.published_at && !isNaN(new Date(newsItem.published_at).getTime())
+                  ? formatDistanceToNow(new Date(newsItem.published_at), { addSuffix: true })
+                  : 'Recently'}
               </div>
             </div>
             

@@ -92,7 +92,11 @@ const GeneralNews = () => {
           </p>
           
           <div className="flex items-center justify-between text-xs text-muted-foreground pt-3 border-t border-border/50">
-            <span>{formatDistanceToNow(new Date(article.published_at), { addSuffix: true })}</span>
+            <span>
+              {article.published_at && !isNaN(new Date(article.published_at).getTime())
+                ? formatDistanceToNow(new Date(article.published_at), { addSuffix: true })
+                : 'Recently'}
+            </span>
             <span className="font-medium">{article.source}</span>
           </div>
         </Card>
