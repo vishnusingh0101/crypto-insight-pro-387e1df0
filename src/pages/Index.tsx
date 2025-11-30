@@ -5,6 +5,7 @@ import MarketOverview from "@/components/crypto/MarketOverview";
 import SearchBar from "@/components/crypto/SearchBar";
 import GeneralNews from "@/components/crypto/GeneralNews";
 import MarketSentiment from "@/components/crypto/MarketSentiment";
+import BestTradeToday from "@/components/crypto/BestTradeToday";
 
 const Index = () => {
   const navigate = useNavigate();
@@ -42,12 +43,15 @@ const Index = () => {
         {/* Search Bar */}
         <SearchBar />
 
-        {/* Market Overview */}
-        <MarketOverview />
-
-        {/* AI Market Sentiment */}
-        <section>
+        {/* Market Overview & Sentiment */}
+        <div className="grid gap-6 lg:grid-cols-2">
+          <MarketOverview />
           <MarketSentiment />
+        </div>
+
+        {/* Best Trade Today */}
+        <section>
+          <BestTradeToday />
         </section>
 
         {/* Crypto Grid */}

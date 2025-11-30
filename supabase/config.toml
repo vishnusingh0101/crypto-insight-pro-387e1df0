@@ -23,3 +23,9 @@ verify_jwt = false
 
 [functions.fetch-real-crypto-news]
 verify_jwt = false
+
+[functions.generate-trade-recommendation]
+verify_jwt = false
+
+[functions.best-trade-today]
+verify_jwt = false

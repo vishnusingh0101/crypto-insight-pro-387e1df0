@@ -9,6 +9,7 @@ import { ArrowLeft, TrendingUp, TrendingDown, Zap, Brain, Newspaper, Smile, Frow
 import SignalsPanel from "@/components/crypto/SignalsPanel";
 import ExplainableAI from "@/components/crypto/ExplainableAI";
 import CoinNews from "@/components/crypto/CoinNews";
+import TradeRecommendation from "@/components/crypto/TradeRecommendation";
 import { toast } from "sonner";
 
 const SentimentBadge = ({ coinName }: { coinName: string }) => {
@@ -216,6 +217,9 @@ const CoinAnalysis = () => {
             </div>
           </div>
         </Card>
+
+        {/* Complete Trade Recommendation */}
+        <TradeRecommendation selectedCrypto={coinId || null} />
 
         {/* AI Analysis Sections */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
