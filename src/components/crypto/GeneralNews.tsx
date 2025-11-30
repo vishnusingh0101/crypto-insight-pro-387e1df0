@@ -3,12 +3,16 @@ import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Newspaper, ExternalLink, Smile, Frown, Meh } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { useNavigate } from "react-router-dom";
+import { useState } from "react";
 
 const GeneralNews = () => {
   const navigate = useNavigate();
+  const [displayCount, setDisplayCount] = useState(6);
+  
   const { data: news, isLoading } = useQuery({
     queryKey: ["general-crypto-news"],
     queryFn: async () => {
@@ -68,8 +72,9 @@ const GeneralNews = () => {
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      {news.map((article: any, index: number) => (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {news.slice(0, displayCount).map((article: any, index: number) => (
         <Card
           key={index}
           className="p-6 glass-morphism hover:bg-card/80 transition-all group cursor-pointer"
@@ -100,7 +105,19 @@ const GeneralNews = () => {
             <span className="font-medium">{article.source}</span>
           </div>
         </Card>
-      ))}
+        ))}
+      </div>
+      
+      {news && news.length > displayCount && (
+        <div className="flex justify-center">
+          <Button 
+            variant="outline" 
+            onClick={() => setDisplayCount(prev => prev + 6)}
+          >
+            Show More News
+          </Button>
+        </div>
+      )}
     </div>
   );
 };

@@ -3,10 +3,12 @@ import { supabase } from "@/integrations/supabase/client";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Newspaper, ExternalLink, Clock, Smile, Frown, Meh } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { formatDistanceToNow } from "date-fns";
+import { useState } from "react";
 
 interface CoinNewsProps {
   coinName: string;
@@ -14,6 +16,8 @@ interface CoinNewsProps {
 
 const CoinNews = ({ coinName }: CoinNewsProps) => {
   const navigate = useNavigate();
+  const [displayCount, setDisplayCount] = useState(4);
+  
   const { data: news, isLoading } = useQuery({
     queryKey: ["coin-news", coinName],
     queryFn: async () => {
@@ -73,7 +77,7 @@ const CoinNews = ({ coinName }: CoinNewsProps) => {
       </div>
       
       <div className="space-y-4">
-        {news.map((article: any, index: number) => {
+        {news.slice(0, displayCount).map((article: any, index: number) => {
           const getSentimentIcon = (sentiment: string) => {
             switch (sentiment) {
               case "positive":
@@ -135,6 +139,17 @@ const CoinNews = ({ coinName }: CoinNewsProps) => {
             </div>
           );
         })}
+        
+        {news && news.length > displayCount && (
+          <div className="flex justify-center pt-4">
+            <Button 
+              variant="outline" 
+              onClick={() => setDisplayCount(prev => prev + 4)}
+            >
+              Show More News
+            </Button>
+          </div>
+        )}
       </div>
     </Card>
   );
