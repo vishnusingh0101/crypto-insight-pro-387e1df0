@@ -89,13 +89,13 @@ const CryptoGrid = ({ onSelectCrypto }: CryptoGridProps) => {
                 <div className="flex justify-between">
                   <span>Market Cap</span>
                   <span className="font-mono">
-                    ${(crypto.market_cap / 1e9).toFixed(2)}B
+                    {crypto.market_cap ? `$${(crypto.market_cap / 1e9).toFixed(2)}B` : 'N/A'}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span>24h Volume</span>
                   <span className="font-mono">
-                    ${(crypto.total_volume / 1e9).toFixed(2)}B
+                    {crypto.total_volume ? `$${(crypto.total_volume / 1e9).toFixed(2)}B` : 'N/A'}
                   </span>
                 </div>
               </div>
