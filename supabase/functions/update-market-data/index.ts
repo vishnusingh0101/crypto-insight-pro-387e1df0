@@ -94,6 +94,14 @@ async function safeFetchJson(url: string, label: string): Promise<any> {
       }
 
       if (!res.ok) {
+        // For chart endpoints, don't fail the whole job on auth/rate errors
+        if (label.startsWith("chart:")) {
+          console.warn(
+            `${label}: non-OK status ${res.status}, returning null payload instead of throwing`,
+          );
+          return null;
+        }
+
         throw new Error(`${label}: HTTP ${res.status}`);
       }
 
@@ -195,21 +203,41 @@ serve(async (req) => {
       const coin = filtered[i];
       console.log(`Processing coin ${i + 1}/${filtered.length}: ${coin.id}`);
 
-      const chartJson = (await safeFetchJson(
-        COINGECKO_CHART_URL(coin.id),
-        `chart:${coin.id}`,
-      )) as MarketChart;
-
-      const closes = chartJson.prices.map(([, price]) => price);
-      const closesTail = closes.length > 100 ? closes.slice(-100) : closes;
-
-      const rsi = computeRsi(closesTail, 14);
-      const atrAbs = computeAtr(closesTail, 14);
-
-      const currentPrice = n(coin.current_price);
-      const atrPct = currentPrice > 0 ? (atrAbs / currentPrice) * 100 : 0;
-
+      let rsi = 50;
+      let atrPct = 0;
       let volatilityScore = 0;
+      const currentPrice = n(coin.current_price);
+
+      try {
+        const chartJson = (await safeFetchJson(
+          COINGECKO_CHART_URL(coin.id),
+          `chart:${coin.id}`,
+        )) as MarketChart;
+
+        const closes = chartJson.prices.map(([, price]) => price);
+        const closesTail = closes.length > 100 ? closes.slice(-100) : closes;
+
+        rsi = computeRsi(closesTail, 14);
+        const atrAbs = computeAtr(closesTail, 14);
+
+        atrPct = currentPrice > 0 ? (atrAbs / currentPrice) * 100 : 0;
+      } catch (err) {
+        console.warn(
+          `update-market-data: chart fetch failed for ${coin.id}, using fallback volatility estimates`,
+          err,
+        );
+
+        const high = n(coin.high_24h);
+        const low = n(coin.low_24h);
+
+        if (currentPrice > 0 && high > 0 && low > 0) {
+          const range = high - low;
+          atrPct = currentPrice > 0 ? (range / currentPrice) * 50 : 0;
+        } else {
+          atrPct = Math.abs(n(coin.price_change_percentage_24h_in_currency));
+        }
+      }
+
       if (atrPct >= 3 && atrPct <= 15) volatilityScore = 10;
       else if (atrPct >= 1.5 && atrPct < 3) volatilityScore = 6;
       else if (atrPct > 15) volatilityScore = 4;
