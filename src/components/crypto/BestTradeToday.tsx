@@ -10,14 +10,38 @@ import { useNavigate } from "react-router-dom";
 const BestTradeToday = () => {
   const navigate = useNavigate();
   
-  const { data: bestTrade, isLoading } = useQuery({
+  const { data: bestTrade, isLoading, error } = useQuery({
     queryKey: ['bestTradeToday'],
     queryFn: async () => {
+      console.log("Fetching best trade...");
       const { data, error } = await supabase.functions.invoke('best-trade');
-      if (error) throw error;
+
+      if (error) {
+        console.error("Error fetching best trade:", error);
+        
+        // If cache doesn't exist, try to update market data first
+        if (error.message?.includes("Failed to load cached market data")) {
+          console.log("Cache empty, updating market data...");
+          const { error: updateError } = await supabase.functions.invoke('update-market-data');
+          
+          if (updateError) {
+            console.error("Error updating market data:", updateError);
+            throw new Error("Failed to initialize market data");
+          }
+          
+          // Retry fetching best trade after updating cache
+          const { data: retryData, error: retryError } = await supabase.functions.invoke('best-trade');
+          if (retryError) throw retryError;
+          return retryData;
+        }
+        
+        throw error;
+      }
+
       return data;
     },
     refetchInterval: 300000, // Refetch every 5 minutes
+    retry: 1,
   });
 
   if (isLoading) {
@@ -29,6 +53,24 @@ const BestTradeToday = () => {
         </CardHeader>
         <CardContent>
           <Skeleton className="h-48 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card className="border-2 border-destructive/20 bg-gradient-to-br from-destructive/5 to-destructive/10">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-destructive">
+            <ShieldAlert className="h-6 w-6" />
+            Unable to Load Best Trade
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            {error instanceof Error ? error.message : "Failed to fetch trade data. Please try again later."}
+          </p>
         </CardContent>
       </Card>
     );
