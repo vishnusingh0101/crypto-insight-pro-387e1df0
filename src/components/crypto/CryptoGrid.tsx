@@ -81,7 +81,11 @@ const CryptoGrid = ({ onSelectCrypto }: CryptoGridProps) => {
                   }`}
                 >
                   {isPositive ? "+" : ""}
-                  {crypto.price_change_percentage_24h.toFixed(2)}%
+                  {(
+                    crypto.price_change_percentage_24h ??
+                    crypto.price_change_percentage_24h_in_currency ??
+                    0
+                  ).toFixed(2)}%
                 </span>
               </div>
               
