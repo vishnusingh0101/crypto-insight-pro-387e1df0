@@ -13,7 +13,7 @@ const BestTradeToday = () => {
   const { data: bestTrade, isLoading } = useQuery({
     queryKey: ['bestTradeToday'],
     queryFn: async () => {
-      const { data, error } = await supabase.functions.invoke('best-trade-today');
+      const { data, error } = await supabase.functions.invoke('best-trade');
       if (error) throw error;
       return data;
     },
@@ -96,7 +96,7 @@ const BestTradeToday = () => {
               <DollarSign className="h-3 w-3" />
               Current
             </div>
-            <div className="font-bold text-lg">${bestTrade.currentPrice.toLocaleString()}</div>
+            <div className="font-bold text-lg">${bestTrade.currentPrice?.toLocaleString() ?? 'N/A'}</div>
           </div>
           <div className="space-y-1 p-3 bg-background/50 rounded-lg">
             <div className="flex items-center gap-1 text-muted-foreground text-xs">
@@ -104,7 +104,7 @@ const BestTradeToday = () => {
               Entry
             </div>
             <div className="font-bold text-lg text-blue-600 dark:text-blue-400">
-              ${bestTrade.buyPrice.toLocaleString()}
+              ${bestTrade.buyPrice?.toLocaleString() ?? 'N/A'}
             </div>
           </div>
           <div className="space-y-1 p-3 bg-background/50 rounded-lg">
@@ -113,7 +113,7 @@ const BestTradeToday = () => {
               Target
             </div>
             <div className="font-bold text-lg text-green-600 dark:text-green-400">
-              ${bestTrade.targetPrice.toLocaleString()}
+              ${bestTrade.targetPrice?.toLocaleString() ?? 'N/A'}
             </div>
           </div>
           <div className="space-y-1 p-3 bg-background/50 rounded-lg">
@@ -122,7 +122,7 @@ const BestTradeToday = () => {
               Stop Loss
             </div>
             <div className="font-bold text-lg text-red-600 dark:text-red-400">
-              ${bestTrade.stopLoss.toLocaleString()}
+              ${bestTrade.stopLoss?.toLocaleString() ?? 'N/A'}
             </div>
           </div>
         </div>
@@ -131,18 +131,18 @@ const BestTradeToday = () => {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="flex flex-col items-center justify-center p-3 bg-background/50 rounded-lg">
             <span className="text-xs text-muted-foreground">Risk/Reward</span>
-            <span className="text-xl font-bold">{bestTrade.riskReward}:1</span>
+            <span className="text-xl font-bold">{bestTrade.riskReward ?? 0}:1</span>
           </div>
           <div className="flex flex-col items-center justify-center p-3 bg-background/50 rounded-lg">
             <span className="text-xs text-muted-foreground">24h Change</span>
-            <span className={`text-xl font-bold ${bestTrade.priceChange24h >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-              {bestTrade.priceChange24h >= 0 ? '+' : ''}{bestTrade.priceChange24h}%
+            <span className={`text-xl font-bold ${(bestTrade.priceChange24h ?? 0) >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+              {(bestTrade.priceChange24h ?? 0) >= 0 ? '+' : ''}{(bestTrade.priceChange24h ?? 0).toFixed(2)}%
             </span>
           </div>
           <div className="flex flex-col items-center justify-center p-3 bg-background/50 rounded-lg">
             <span className="text-xs text-muted-foreground">7d Change</span>
-            <span className={`text-xl font-bold ${bestTrade.priceChange7d >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-              {bestTrade.priceChange7d >= 0 ? '+' : ''}{bestTrade.priceChange7d}%
+            <span className={`text-xl font-bold ${(bestTrade.priceChange7d ?? 0) >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
+              {(bestTrade.priceChange7d ?? 0) >= 0 ? '+' : ''}{(bestTrade.priceChange7d ?? 0).toFixed(2)}%
             </span>
           </div>
         </div>

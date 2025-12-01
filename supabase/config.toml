@@ -1,5 +1,11 @@
 project_id = "mxrxzlaclormvmqisjnj"
 
+[functions.update-market-data]
+verify_jwt = false
+
+[functions.best-trade]
+verify_jwt = false
+
 [functions.fetch-crypto-data]
 verify_jwt = false
 
