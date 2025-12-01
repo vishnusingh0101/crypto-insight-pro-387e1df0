@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { FunctionsHttpError } from "@supabase/supabase-js";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -18,23 +19,32 @@ const BestTradeToday = () => {
 
       if (error) {
         console.error("Error fetching best trade:", error);
-        
-        // If cache doesn't exist, try to update market data first
-        if (error.message?.includes("Failed to load cached market data")) {
-          console.log("Cache empty, updating market data...");
-          const { error: updateError } = await supabase.functions.invoke('update-market-data');
-          
-          if (updateError) {
-            console.error("Error updating market data:", updateError);
-            throw new Error("Failed to initialize market data");
+
+        if (error instanceof FunctionsHttpError) {
+          try {
+            const details = await error.context.json();
+            const message =
+              (details && typeof (details as any).error === "string" && (details as any).error) ||
+              (typeof details === "string" ? details : "");
+
+            if (message.includes("Failed to load cached market data")) {
+              console.log("Cache empty, triggering market data update...");
+              const { error: updateError } = await supabase.functions.invoke('update-market-data');
+
+              if (updateError) {
+                console.error("Error updating market data:", updateError);
+                throw new Error("Failed to initialize market data");
+              }
+
+              const { data: retryData, error: retryError } = await supabase.functions.invoke('best-trade');
+              if (retryError) throw retryError;
+              return retryData;
+            }
+          } catch (ctxErr) {
+            console.warn("Failed to parse best-trade error context", ctxErr);
           }
-          
-          // Retry fetching best trade after updating cache
-          const { data: retryData, error: retryError } = await supabase.functions.invoke('best-trade');
-          if (retryError) throw retryError;
-          return retryData;
         }
-        
+
         throw error;
       }
 
