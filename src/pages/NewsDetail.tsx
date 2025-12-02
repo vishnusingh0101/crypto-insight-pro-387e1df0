@@ -97,16 +97,29 @@ const NewsDetail = () => {
           </div>
 
           {/* Source Link */}
-          {newsItem.url && (
+          {newsItem.url && newsItem.url !== "#" && (
             <div className="pt-6 border-t border-border/50">
-              <Button
-                variant="outline"
-                onClick={() => window.open(newsItem.url, "_blank")}
-                className="gap-2"
+              <a
+                href={newsItem.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-block"
               >
-                <ExternalLink className="w-4 h-4" />
-                Read Full Article on {newsItem.source}
-              </Button>
+                <Button
+                  variant="outline"
+                  className="gap-2"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  Read Full Article on {newsItem.source}
+                </Button>
+              </a>
+            </div>
+          )}
+          {(!newsItem.url || newsItem.url === "#") && (
+            <div className="pt-6 border-t border-border/50">
+              <p className="text-sm text-muted-foreground">
+                Full article link not available for this news item.
+              </p>
             </div>
           )}
         </Card>

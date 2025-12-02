@@ -345,6 +345,28 @@ serve(async (req) => {
     const payload = JSON.parse(text) as StoredPayload;
     const coins = payload.coins ?? [];
 
+    // Check if data is stale (older than 1 hour)
+    const updatedAt = new Date(payload.updatedAt);
+    const now = new Date();
+    const ageMs = now.getTime() - updatedAt.getTime();
+    const oneHourMs = 60 * 60 * 1000;
+    
+    if (ageMs > oneHourMs) {
+      console.log(`Market data is ${Math.round(ageMs / 60000)} minutes old, triggering refresh...`);
+      // Trigger background refresh but continue with current data
+      const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+      const adminClient = createClient(supabaseUrl, serviceRoleKey);
+      
+      // Fire and forget - don't wait for update to complete
+      fetch(`${supabaseUrl}/functions/v1/update-market-data`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${serviceRoleKey}`,
+          'Content-Type': 'application/json'
+        }
+      }).catch(err => console.error("Background update failed:", err));
+    }
+
     if (!coins.length) {
       return new Response(
         JSON.stringify({ error: "No coins in cached data" }),
