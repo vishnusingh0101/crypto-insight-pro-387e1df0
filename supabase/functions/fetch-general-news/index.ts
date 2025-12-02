@@ -5,103 +5,206 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// CryptoCompare News API (free, no API key required for basic usage)
+const CRYPTOCOMPARE_NEWS_URL = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN";
+
+// Alternative: CoinGecko status updates (free)
+const COINGECKO_STATUS_URL = "https://api.coingecko.com/api/v3/status_updates";
+
+interface CryptoCompareArticle {
+  id: string;
+  guid: string;
+  published_on: number;
+  imageurl: string;
+  title: string;
+  url: string;
+  source: string;
+  body: string;
+  tags: string;
+  categories: string;
+  upvotes: string;
+  downvotes: string;
+  lang: string;
+  source_info: {
+    name: string;
+    lang: string;
+    img: string;
+  };
+}
+
+interface NewsItem {
+  title: string;
+  description: string;
+  url: string;
+  source: string;
+  published_at: string;
+  sentiment: "positive" | "negative" | "neutral";
+  trending: boolean;
+  imageUrl?: string;
+}
+
+function analyzeSentiment(text: string): "positive" | "negative" | "neutral" {
+  const lowerText = text.toLowerCase();
+  
+  const positiveWords = [
+    'surge', 'soar', 'rally', 'gain', 'bullish', 'growth', 'profit', 'success',
+    'breakthrough', 'milestone', 'adoption', 'partnership', 'launch', 'upgrade',
+    'record', 'high', 'boost', 'rise', 'increase', 'positive', 'strong', 'win'
+  ];
+  
+  const negativeWords = [
+    'crash', 'plunge', 'drop', 'fall', 'bearish', 'loss', 'hack', 'scam',
+    'fraud', 'warning', 'risk', 'ban', 'regulation', 'investigation', 'lawsuit',
+    'vulnerability', 'exploit', 'decline', 'fear', 'concern', 'alert', 'danger'
+  ];
+  
+  let positiveScore = 0;
+  let negativeScore = 0;
+  
+  for (const word of positiveWords) {
+    if (lowerText.includes(word)) positiveScore++;
+  }
+  
+  for (const word of negativeWords) {
+    if (lowerText.includes(word)) negativeScore++;
+  }
+  
+  if (positiveScore > negativeScore + 1) return "positive";
+  if (negativeScore > positiveScore + 1) return "negative";
+  return "neutral";
+}
+
+async function fetchCryptoCompareNews(): Promise<NewsItem[]> {
+  try {
+    console.log("Fetching news from CryptoCompare...");
+    
+    const response = await fetch(CRYPTOCOMPARE_NEWS_URL, {
+      headers: {
+        'Accept': 'application/json',
+      }
+    });
+    
+    if (!response.ok) {
+      console.error("CryptoCompare API error:", response.status);
+      return [];
+    }
+    
+    const data = await response.json();
+    const articles: CryptoCompareArticle[] = data.Data || [];
+    
+    console.log(`Fetched ${articles.length} articles from CryptoCompare`);
+    
+    return articles.map((article, index) => {
+      const fullText = `${article.title} ${article.body}`;
+      const sentiment = analyzeSentiment(fullText);
+      
+      return {
+        title: article.title,
+        description: article.body.length > 300 
+          ? article.body.substring(0, 300) + "..." 
+          : article.body,
+        url: article.url,
+        source: article.source_info?.name || article.source || "CryptoCompare",
+        published_at: new Date(article.published_on * 1000).toISOString(),
+        sentiment,
+        trending: index < 5, // Mark first 5 as trending
+        imageUrl: article.imageurl,
+      };
+    });
+  } catch (error) {
+    console.error("Error fetching CryptoCompare news:", error);
+    return [];
+  }
+}
+
+async function fetchCoinGeckoUpdates(): Promise<NewsItem[]> {
+  try {
+    console.log("Fetching updates from CoinGecko...");
+    
+    const response = await fetch(`${COINGECKO_STATUS_URL}?per_page=50`, {
+      headers: {
+        'Accept': 'application/json',
+      }
+    });
+    
+    if (!response.ok) {
+      console.error("CoinGecko API error:", response.status);
+      return [];
+    }
+    
+    const data = await response.json();
+    const updates = data.status_updates || [];
+    
+    console.log(`Fetched ${updates.length} updates from CoinGecko`);
+    
+    return updates.map((update: any) => {
+      const sentiment = analyzeSentiment(update.description || "");
+      
+      return {
+        title: update.project?.name 
+          ? `${update.project.name}: ${update.category || "Update"}`
+          : update.category || "Crypto Update",
+        description: update.description || "",
+        url: update.project?.links?.homepage?.[0] || "#",
+        source: update.project?.name || "CoinGecko",
+        published_at: update.created_at || new Date().toISOString(),
+        sentiment,
+        trending: false,
+        imageUrl: update.project?.image?.small,
+      };
+    });
+  } catch (error) {
+    console.error("Error fetching CoinGecko updates:", error);
+    return [];
+  }
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    console.log("Fetching general crypto news...");
+    console.log("Fetching general crypto news from multiple sources...");
 
-    // Generate diverse crypto news feed with proper ISO dates
-    const now = new Date();
-    const generalNews = [
-      {
-        title: "Bitcoin ETF Sees Record Inflows as Institutional Interest Surges",
-        description: "Major financial institutions pour billions into Bitcoin ETFs, marking a historic shift in institutional crypto adoption. The trend signals growing confidence in digital assets as a legitimate investment class.",
-        url: "#",
-        source: "Bloomberg Crypto",
-        published_at: new Date(now.getTime() - 1 * 60 * 60 * 1000).toISOString(),
-        sentiment: "positive",
-        trending: true,
-      },
-      {
-        title: "DeFi Protocol Launches Revolutionary Cross-Chain Bridge",
-        description: "New technology enables seamless asset transfers across multiple blockchains without centralized intermediaries. Early adopters report 90% reduction in transaction costs and improved security.",
-        url: "#",
-        source: "DeFi Pulse",
-        published_at: new Date(now.getTime() - 3 * 60 * 60 * 1000).toISOString(),
-        sentiment: "positive",
-        trending: true,
-      },
-      {
-        title: "Regulatory Clarity: SEC Announces Comprehensive Crypto Framework",
-        description: "Securities and Exchange Commission releases detailed guidelines for cryptocurrency classification and compliance. Industry leaders welcome the clarity while preparing for stricter oversight.",
-        url: "#",
-        source: "CoinDesk",
-        published_at: new Date(now.getTime() - 5 * 60 * 60 * 1000).toISOString(),
-        sentiment: "neutral",
-        trending: false,
-      },
-      {
-        title: "Major Exchange Enhances Security Following Industry-Wide Audit",
-        description: "Leading cryptocurrency exchange implements multi-layered security protocols after comprehensive third-party audit. New measures include cold storage expansion and AI-powered fraud detection.",
-        url: "#",
-        source: "CryptoNews",
-        published_at: new Date(now.getTime() - 7 * 60 * 60 * 1000).toISOString(),
-        sentiment: "positive",
-        trending: false,
-      },
-      {
-        title: "NFT Market Shows Signs of Recovery with Blue-Chip Collections",
-        description: "Top-tier NFT collections experience renewed trading activity and price appreciation. Analysts attribute recovery to improved utility integration and institutional collector interest.",
-        url: "#",
-        source: "NFT Evening",
-        published_at: new Date(now.getTime() - 9 * 60 * 60 * 1000).toISOString(),
-        sentiment: "positive",
-        trending: true,
-      },
-      {
-        title: "Energy-Efficient Mining: Green Crypto Initiative Gains Momentum",
-        description: "Major mining operations transition to renewable energy sources as environmental sustainability becomes priority. New facilities powered by solar and wind energy report 80% reduction in carbon footprint.",
-        url: "#",
-        source: "Crypto Climate",
-        published_at: new Date(now.getTime() - 12 * 60 * 60 * 1000).toISOString(),
-        sentiment: "positive",
-        trending: false,
-      },
-      {
-        title: "Central Bank Digital Currencies: 15 Countries Advance Pilot Programs",
-        description: "Global central banks accelerate CBDC development with successful pilot programs. Experts predict widespread adoption within next two years as traditional finance embraces digital transformation.",
-        url: "#",
-        source: "Financial Times",
-        published_at: new Date(now.getTime() - 14 * 60 * 60 * 1000).toISOString(),
-        sentiment: "neutral",
-        trending: false,
-      },
-      {
-        title: "Layer 2 Solutions Process Record Transaction Volume",
-        description: "Ethereum scaling solutions handle unprecedented transaction throughput with minimal fees. Technology breakthrough addresses longstanding scalability concerns while maintaining security.",
-        url: "#",
-        source: "Ethereum World News",
-        published_at: new Date(now.getTime() - 16 * 60 * 60 * 1000).toISOString(),
-        sentiment: "positive",
-        trending: false,
-      },
-      {
-        title: "Crypto Wallet Security Alert: Users Urged to Update Software",
-        description: "Security researchers identify potential vulnerability in popular wallet software. Developers release emergency patch and recommend immediate updates for all users.",
-        url: "#",
-        source: "Security Weekly",
-        published_at: new Date(now.getTime() - 18 * 60 * 60 * 1000).toISOString(),
-        sentiment: "negative",
-        trending: true,
-      },
-    ];
+    // Fetch from multiple sources in parallel
+    const [cryptoCompareNews, coinGeckoUpdates] = await Promise.all([
+      fetchCryptoCompareNews(),
+      fetchCoinGeckoUpdates(),
+    ]);
 
-    console.log(`Generated ${generalNews.length} general news articles`);
+    // Combine and deduplicate news
+    const allNews: NewsItem[] = [];
+    const seenTitles = new Set<string>();
 
-    return new Response(JSON.stringify(generalNews), {
+    // Add CryptoCompare news first (usually higher quality)
+    for (const news of cryptoCompareNews) {
+      const titleLower = news.title.toLowerCase();
+      if (!seenTitles.has(titleLower)) {
+        seenTitles.add(titleLower);
+        allNews.push(news);
+      }
+    }
+
+    // Add CoinGecko updates
+    for (const news of coinGeckoUpdates) {
+      const titleLower = news.title.toLowerCase();
+      if (!seenTitles.has(titleLower) && news.description.length > 20) {
+        seenTitles.add(titleLower);
+        allNews.push(news);
+      }
+    }
+
+    // Sort by published date (newest first)
+    allNews.sort((a, b) => {
+      const dateA = new Date(a.published_at).getTime();
+      const dateB = new Date(b.published_at).getTime();
+      return dateB - dateA;
+    });
+
+    console.log(`Returning ${allNews.length} total news articles`);
+
+    return new Response(JSON.stringify(allNews), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (error) {
