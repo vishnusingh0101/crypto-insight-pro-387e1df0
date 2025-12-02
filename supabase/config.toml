@@ -35,3 +35,6 @@ verify_jwt = false
 
 [functions.best-trade-today]
 verify_jwt = false
+
+[functions.analyze-news-impact]
+verify_jwt = false
