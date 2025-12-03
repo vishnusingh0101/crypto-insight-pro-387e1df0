@@ -5,12 +5,78 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, TrendingUp, TrendingDown, Zap, Brain, Newspaper, Smile, Frown, Meh } from "lucide-react";
+import { ArrowLeft, TrendingUp, TrendingDown, Zap, Brain, Newspaper, Smile, Frown, Meh, Clock, RefreshCw } from "lucide-react";
 import SignalsPanel from "@/components/crypto/SignalsPanel";
 import ExplainableAI from "@/components/crypto/ExplainableAI";
 import CoinNews from "@/components/crypto/CoinNews";
 import TradeRecommendation from "@/components/crypto/TradeRecommendation";
 import { toast } from "sonner";
+import { useState } from "react";
+
+// Helper to fetch from CoinGecko with retry
+async function fetchCoinDataWithRetry(coinId: string, maxRetries = 2): Promise<any | null> {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const response = await fetch(
+        `https://api.coingecko.com/api/v3/coins/${coinId}?localization=false&tickers=false&community_data=false&developer_data=false`,
+        { headers: { 'Accept': 'application/json' } }
+      );
+      
+      if (response.ok) {
+        return { data: await response.json(), source: 'live', timestamp: new Date().toISOString() };
+      }
+      
+      if (response.status === 429 || response.status >= 500) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        continue;
+      }
+      
+      return null;
+    } catch {
+      if (i === maxRetries - 1) return null;
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  }
+  return null;
+}
+
+// Fetch cached data from market_snapshots
+async function fetchCachedCoinData(coinId: string): Promise<any | null> {
+  try {
+    const { data, error } = await supabase
+      .from('market_snapshots')
+      .select('*')
+      .eq('coin_id', coinId)
+      .order('collected_at', { ascending: false })
+      .limit(1)
+      .single();
+    
+    if (error || !data) return null;
+    
+    // Transform to CoinGecko-like format
+    return {
+      data: {
+        id: data.coin_id,
+        symbol: data.coin_symbol?.toLowerCase(),
+        name: data.coin_name,
+        image: { large: `https://coin-images.coingecko.com/coins/images/${data.coin_id}/large/${data.coin_id}.png` },
+        market_cap_rank: data.market_cap_rank,
+        market_data: {
+          current_price: { usd: Number(data.current_price) },
+          market_cap: { usd: Number(data.market_cap) },
+          total_volume: { usd: Number(data.volume_24h) },
+          high_24h: { usd: Number(data.high_24h) },
+          low_24h: { usd: Number(data.low_24h) },
+          price_change_percentage_24h: Number(data.price_change_24h) || 0,
+        },
+      },
+      source: 'cached',
+      timestamp: data.collected_at,
+    };
+  } catch {
+    return null;
+  }
+}
 
 const SentimentBadge = ({ coinName }: { coinName: string }) => {
   const { data: news } = useQuery({
@@ -65,26 +131,35 @@ const SentimentBadge = ({ coinName }: { coinName: string }) => {
 const CoinAnalysis = () => {
   const { coinId } = useParams<{ coinId: string }>();
   const navigate = useNavigate();
+  const [dataSource, setDataSource] = useState<'live' | 'cached' | null>(null);
+  const [dataTimestamp, setDataTimestamp] = useState<string | null>(null);
 
-  const { data: coinData, isLoading } = useQuery({
+  const { data: coinData, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ["coin-detail", coinId],
     queryFn: async () => {
-      const response = await fetch(
-        `https://api.coingecko.com/api/v3/coins/${coinId}?localization=false&tickers=false&community_data=false&developer_data=false`,
-        {
-          headers: { 'Accept': 'application/json' },
-        }
-      );
-
-      if (!response.ok) {
-        toast.error("Failed to fetch coin data. Please check the coin name.");
-        throw new Error(`Failed to fetch coin data: ${response.status}`);
+      // Always try live data first
+      const liveData = await fetchCoinDataWithRetry(coinId!);
+      if (liveData) {
+        setDataSource('live');
+        setDataTimestamp(liveData.timestamp);
+        return liveData.data;
       }
-
-      return await response.json();
+      
+      // Fallback to cached data
+      const cachedData = await fetchCachedCoinData(coinId!);
+      if (cachedData) {
+        setDataSource('cached');
+        setDataTimestamp(cachedData.timestamp);
+        toast.info("Using cached data - live data temporarily unavailable");
+        return cachedData.data;
+      }
+      
+      toast.error("Unable to fetch coin data. Please try again later.");
+      throw new Error("Failed to fetch coin data from all sources");
     },
     enabled: !!coinId,
-    refetchInterval: 30000,
+    refetchInterval: 60000, // Refresh every minute
+    staleTime: 30000,
   });
 
   if (isLoading || !coinData) {
@@ -134,9 +209,34 @@ const CoinAnalysis = () => {
               <ArrowLeft className="w-4 h-4 mr-2" />
               Back to Dashboard
             </Button>
-            <h2 className="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-              GlobalCryptoUpdate
-            </h2>
+            <div className="flex items-center gap-4">
+              {/* Data freshness indicator */}
+              {dataSource && (
+                <div className="flex items-center gap-2 text-sm">
+                  <Clock className="w-4 h-4 text-muted-foreground" />
+                  <span className={dataSource === 'live' ? 'text-success' : 'text-warning'}>
+                    {dataSource === 'live' ? 'Live Data' : 'Cached Data'}
+                  </span>
+                  {dataTimestamp && (
+                    <span className="text-muted-foreground">
+                      ({new Date(dataTimestamp).toLocaleTimeString()})
+                    </span>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => refetch()}
+                    disabled={isRefetching}
+                    className="h-7 px-2"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isRefetching ? 'animate-spin' : ''}`} />
+                  </Button>
+                </div>
+              )}
+              <h2 className="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
+                GlobalCryptoUpdate
+              </h2>
+            </div>
           </div>
         </div>
       </header>
