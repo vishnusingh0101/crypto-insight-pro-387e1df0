@@ -578,6 +578,33 @@ serve(async (req) => {
 
     console.log(`Generated recommendation: ${action} with ${successProbability}% probability`);
 
+    // Store prediction for learning (fire and forget)
+    try {
+      supabase
+        .from('trade_predictions')
+        .insert({
+          coin_id: coin.id,
+          coin_name: coin.name,
+          action,
+          entry_price: buyPrice,
+          target_price: targetPrice,
+          stop_loss: stopLoss,
+          success_probability: successProbability,
+          buy_score: buyScore,
+          sell_score: sellScore,
+          rsi_at_prediction: coin.rsi14,
+          atr_at_prediction: coin.atr14,
+          volume_ratio_at_prediction: coin.volumeToMcap,
+          market_cap_rank: coin.marketCapRank,
+        })
+        .then(({ error }) => {
+          if (error) console.error('Failed to store prediction:', error);
+          else console.log('Prediction stored for learning');
+        });
+    } catch (e) {
+      console.error('Error storing prediction:', e);
+    }
+
     return new Response(JSON.stringify(recommendation), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
