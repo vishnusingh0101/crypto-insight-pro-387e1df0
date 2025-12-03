@@ -38,3 +38,12 @@ verify_jwt = false
 
 [functions.analyze-news-impact]
 verify_jwt = false
+
+[functions.nightly-data-collector]
+verify_jwt = false
+
+[functions.analyze-strategy]
+verify_jwt = false
+
+[functions.check-prediction-outcomes]
+verify_jwt = false
