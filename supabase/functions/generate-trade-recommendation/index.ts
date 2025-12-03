@@ -9,6 +9,40 @@ const corsHeaders = {
 const BUCKET_NAME = "market-cache";
 const FILE_PATH = "daily/full_market.json";
 
+// Retry fetch with exponential backoff
+async function fetchWithRetry(url: string, maxRetries = 3): Promise<Response | null> {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const response = await fetch(url, {
+        headers: { 'Accept': 'application/json' },
+      });
+      
+      if (response.ok) {
+        return response;
+      }
+      
+      if (response.status === 429 || response.status >= 500) {
+        const waitTime = Math.pow(2, i) * 1000;
+        console.log(`API returned ${response.status}, retrying in ${waitTime}ms...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+      
+      console.log(`API returned ${response.status}, not retrying`);
+      return null;
+    } catch (error) {
+      if (i === maxRetries - 1) {
+        console.error("Fetch failed after retries:", error);
+        return null;
+      }
+      const waitTime = Math.pow(2, i) * 1000;
+      console.log(`Fetch failed, retrying in ${waitTime}ms...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+  }
+  return null;
+}
+
 type EnrichedCoin = {
   id: string;
   symbol: string;
@@ -397,48 +431,69 @@ serve(async (req) => {
     // Fallback to CoinGecko if not in cache
     if (!coin) {
       console.log("Coin not in cache, fetching from CoinGecko...");
-      const response = await fetch(
-        `https://api.coingecko.com/api/v3/coins/${cryptoId}?localization=false&tickers=false&community_data=false&developer_data=false`,
-        { headers: { 'Accept': 'application/json' } }
+      const response = await fetchWithRetry(
+        `https://api.coingecko.com/api/v3/coins/${cryptoId}?localization=false&tickers=false&community_data=false&developer_data=false`
       );
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch crypto data: ${response.status}`);
+      if (response) {
+        const cryptoData = await response.json();
+        const marketData = cryptoData.market_data;
+
+        // Build EnrichedCoin from CoinGecko data
+        const currentPrice = marketData.current_price?.usd || 0;
+        const high24h = marketData.high_24h?.usd || currentPrice;
+        const low24h = marketData.low_24h?.usd || currentPrice;
+        const atr14 = currentPrice > 0 ? ((high24h - low24h) / currentPrice) * 100 : 5;
+        const volumeToMcap = marketData.total_volume?.usd && marketData.market_cap?.usd 
+          ? marketData.total_volume.usd / marketData.market_cap.usd 
+          : 0.05;
+
+        coin = {
+          id: cryptoId,
+          symbol: cryptoData.symbol || "",
+          name: cryptoData.name || cryptoId,
+          image: cryptoData.image?.small || "",
+          currentPrice,
+          marketCap: marketData.market_cap?.usd || 0,
+          volume24h: marketData.total_volume?.usd || 0,
+          marketCapRank: cryptoData.market_cap_rank || 100,
+          high24h,
+          low24h,
+          change1h: marketData.price_change_percentage_1h_in_currency?.usd || 0,
+          change24h: marketData.price_change_percentage_24h || 0,
+          change7d: marketData.price_change_percentage_7d || 0,
+          change30d: marketData.price_change_percentage_30d || 0,
+          rsi14: 50 + (marketData.price_change_percentage_24h || 0) / 2,
+          atr14,
+          volatilityScore: Math.min(atr14 / 10, 1),
+          liquidityScore: Math.min(volumeToMcap * 5, 1),
+          volumeToMcap,
+        };
       }
+    }
 
-      const cryptoData = await response.json();
-      const marketData = cryptoData.market_data;
-
-      // Build EnrichedCoin from CoinGecko data
-      const currentPrice = marketData.current_price?.usd || 0;
-      const high24h = marketData.high_24h?.usd || currentPrice;
-      const low24h = marketData.low_24h?.usd || currentPrice;
-      const atr14 = currentPrice > 0 ? ((high24h - low24h) / currentPrice) * 100 : 5;
-      const volumeToMcap = marketData.total_volume?.usd && marketData.market_cap?.usd 
-        ? marketData.total_volume.usd / marketData.market_cap.usd 
-        : 0.05;
-
-      coin = {
-        id: cryptoId,
-        symbol: cryptoData.symbol || "",
-        name: cryptoData.name || cryptoId,
-        image: cryptoData.image?.small || "",
-        currentPrice,
-        marketCap: marketData.market_cap?.usd || 0,
-        volume24h: marketData.total_volume?.usd || 0,
-        marketCapRank: cryptoData.market_cap_rank || 100,
-        high24h,
-        low24h,
-        change1h: marketData.price_change_percentage_1h_in_currency?.usd || 0,
-        change24h: marketData.price_change_percentage_24h || 0,
-        change7d: marketData.price_change_percentage_7d || 0,
-        change30d: marketData.price_change_percentage_30d || 0,
-        rsi14: 50 + (marketData.price_change_percentage_24h || 0) / 2,
-        atr14,
-        volatilityScore: Math.min(atr14 / 10, 1),
-        liquidityScore: Math.min(volumeToMcap * 5, 1),
-        volumeToMcap,
-      };
+    // If still no coin data, return a HOLD recommendation with unavailable data message
+    if (!coin) {
+      console.log("No data available for coin, returning HOLD recommendation");
+      return new Response(JSON.stringify({
+        action: "HOLD",
+        successProbability: 50,
+        currentPrice: 0,
+        buyPrice: 0,
+        targetPrice: 0,
+        stopLoss: 0,
+        riskReward: 1,
+        analysis: {
+          technical: { score: 50, indicators: {}, summary: "Data temporarily unavailable. Please try again later." },
+          fundamental: { score: 50, indicators: {}, summary: "Unable to fetch market data at this time." },
+          news: { score: 50, sentiment: "Neutral", summary: "Analysis unavailable due to API limitations." }
+        },
+        reasoning: "Unable to fetch real-time data for this cryptocurrency. Market data APIs may be experiencing high traffic. Please try again in a few minutes.",
+        timestamp: new Date().toISOString(),
+        dataUnavailable: true,
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     // Use the same scoring logic as best-trade
