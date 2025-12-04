@@ -48,6 +48,8 @@ export const useNewsNotifications = (news: any[] | undefined) => {
     if (newsHash === lastAnalyzedRef.current) return;
     lastAnalyzedRef.current = newsHash;
 
+    console.log("Analyzing news for alerts:", newsItems.length, "items");
+
     try {
       const { data, error } = await supabase.functions.invoke("analyze-news-impact", {
         body: { news: newsItems },
@@ -58,12 +60,19 @@ export const useNewsNotifications = (news: any[] | undefined) => {
         return;
       }
 
+      console.log("News analysis response:", data);
+
       const alerts = data?.alerts || [];
       
       // Send notifications for each alert
-      alerts.forEach((alert: NewsAlert) => {
-        sendNotification(alert);
-      });
+      if (alerts.length > 0) {
+        console.log("Sending notifications for", alerts.length, "alerts");
+        alerts.forEach((alert: NewsAlert) => {
+          sendNotification(alert);
+        });
+      } else {
+        console.log("No significant alerts found in news");
+      }
     } catch (err) {
       console.error("Failed to analyze news:", err);
     }
