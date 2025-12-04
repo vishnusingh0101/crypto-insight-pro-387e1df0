@@ -1,4 +1,4 @@
-import { TrendingUp, Zap, Activity, Newspaper, Brain } from "lucide-react";
+import { TrendingUp, Zap, Activity, Newspaper, Wallet } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import CryptoGrid from "@/components/crypto/CryptoGrid";
 import MarketOverview from "@/components/crypto/MarketOverview";
@@ -6,6 +6,7 @@ import SearchBar from "@/components/crypto/SearchBar";
 import GeneralNews from "@/components/crypto/GeneralNews";
 import MarketSentiment from "@/components/crypto/MarketSentiment";
 import BestTradeToday from "@/components/crypto/BestTradeToday";
+import { WhaleTracker } from "@/components/crypto/WhaleTracker";
 
 const Index = () => {
   const navigate = useNavigate();
@@ -52,6 +53,16 @@ const Index = () => {
         {/* Best Trade Today */}
         <section>
           <BestTradeToday />
+        </section>
+
+        {/* Live Whale Tracker */}
+        <section>
+          <div className="flex items-center gap-3 mb-6">
+            <Wallet className="w-6 h-6 text-primary" />
+            <h2 className="text-2xl font-bold">Live Whale Activity</h2>
+            <span className="text-sm text-muted-foreground">(On-chain monitoring)</span>
+          </div>
+          <WhaleTracker />
         </section>
 
         {/* Crypto Grid */}

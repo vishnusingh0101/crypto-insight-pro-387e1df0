@@ -50,3 +50,6 @@ verify_jwt = false
 
 [functions.detect-whale-activity]
 verify_jwt = false
+
+[functions.track-whale-transactions]
+verify_jwt = false
