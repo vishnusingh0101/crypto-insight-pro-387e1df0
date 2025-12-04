@@ -47,3 +47,6 @@ verify_jwt = false
 
 [functions.check-prediction-outcomes]
 verify_jwt = false
+
+[functions.detect-whale-activity]
+verify_jwt = false

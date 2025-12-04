@@ -5,11 +5,12 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, TrendingUp, TrendingDown, Zap, Brain, Newspaper, Smile, Frown, Meh, Clock, RefreshCw } from "lucide-react";
+import { ArrowLeft, TrendingUp, TrendingDown, Zap, Brain, Newspaper, Smile, Frown, Meh, Clock, RefreshCw, Waves } from "lucide-react";
 import SignalsPanel from "@/components/crypto/SignalsPanel";
 import ExplainableAI from "@/components/crypto/ExplainableAI";
 import CoinNews from "@/components/crypto/CoinNews";
 import TradeRecommendation from "@/components/crypto/TradeRecommendation";
+import VolumeAnalysis from "@/components/crypto/VolumeAnalysis";
 import { toast } from "sonner";
 import { useState } from "react";
 
@@ -317,6 +318,15 @@ const CoinAnalysis = () => {
             </div>
           </div>
         </Card>
+
+        {/* Whale/Volume Analysis */}
+        <section>
+          <div className="flex items-center gap-3 mb-6">
+            <Waves className="w-6 h-6 text-warning" />
+            <h2 className="text-2xl font-bold">Whale Activity Detection</h2>
+          </div>
+          <VolumeAnalysis coinId={coinId || ''} coinName={coinData.name} />
+        </section>
 
         {/* Complete Trade Recommendation */}
         <TradeRecommendation selectedCrypto={coinId || null} />
