@@ -1,20 +1,21 @@
 import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { 
   Bell, 
+  BellOff,
   AlertTriangle, 
   TrendingUp, 
   TrendingDown,
   Clock,
   Zap,
-  ArrowDownRight,
-  ArrowUpRight,
   Activity
 } from "lucide-react";
 import { toast } from "sonner";
+import { useWhaleNotifications } from "@/hooks/useWhaleNotifications";
 
 interface WhaleTransaction {
   hash: string;
@@ -42,6 +43,7 @@ interface Alert {
   timestamp: Date;
   severity: 'high' | 'medium' | 'low';
   blockchain?: string;
+  hash?: string;
 }
 
 const formatUsd = (amount: number) => {
@@ -62,6 +64,7 @@ const formatTimeAgo = (date: Date) => {
 export const WhaleAlertsFeed = ({ transactions, isLoading, prices }: WhaleAlertsFeedProps) => {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [notifiedHashes, setNotifiedHashes] = useState<Set<string>>(new Set());
+  const { isSupported, isEnabled, toggleNotifications, sendNotification } = useWhaleNotifications();
 
   useEffect(() => {
     if (!transactions.length) return;
@@ -70,17 +73,18 @@ export const WhaleAlertsFeed = ({ transactions, isLoading, prices }: WhaleAlerts
     
     // Generate alerts from high-significance transactions
     transactions
-      .filter(tx => tx.significance === 'high')
-      .slice(0, 5)
+      .filter(tx => tx.significance === 'high' || tx.significance === 'medium')
+      .slice(0, 8)
       .forEach((tx, index) => {
         newAlerts.push({
           id: `whale-${tx.hash}`,
           type: 'whale',
-          title: `Massive ${tx.blockchain.toUpperCase()} Movement`,
+          title: `${tx.significance === 'high' ? 'Massive' : 'Large'} ${tx.blockchain.toUpperCase()} Movement`,
           message: `${formatUsd(tx.amountUsd)} ${tx.type === 'exchange_inflow' ? 'moved to exchange' : tx.type === 'exchange_outflow' ? 'withdrawn from exchange' : 'transferred'}`,
-          timestamp: new Date(Date.now() - index * 120000),
-          severity: 'high',
+          timestamp: new Date(tx.timestamp),
+          severity: tx.significance,
           blockchain: tx.blockchain,
+          hash: tx.hash,
         });
       });
 
@@ -88,7 +92,7 @@ export const WhaleAlertsFeed = ({ transactions, isLoading, prices }: WhaleAlerts
     const inflows = transactions.filter(tx => tx.type === 'exchange_inflow');
     const outflows = transactions.filter(tx => tx.type === 'exchange_outflow');
     
-    if (inflows.length > outflows.length * 1.5) {
+    if (inflows.length > outflows.length * 1.5 && inflows.length > 2) {
       newAlerts.push({
         id: 'trend-bearish',
         type: 'warning',
@@ -97,7 +101,7 @@ export const WhaleAlertsFeed = ({ transactions, isLoading, prices }: WhaleAlerts
         timestamp: new Date(Date.now() - 300000),
         severity: 'high',
       });
-    } else if (outflows.length > inflows.length * 1.5) {
+    } else if (outflows.length > inflows.length * 1.5 && outflows.length > 2) {
       newAlerts.push({
         id: 'trend-bullish',
         type: 'trend',
@@ -121,15 +125,15 @@ export const WhaleAlertsFeed = ({ transactions, isLoading, prices }: WhaleAlerts
       });
     }
 
-    // Add medium significance summary
-    const mediumTxs = transactions.filter(tx => tx.significance === 'medium');
-    if (mediumTxs.length > 3) {
-      const totalVolume = mediumTxs.reduce((sum, tx) => sum + tx.amountUsd, 0);
+    // Add summary for low significance transactions
+    const lowTxs = transactions.filter(tx => tx.significance === 'low');
+    if (lowTxs.length > 0) {
+      const totalVolume = lowTxs.reduce((sum, tx) => sum + tx.amountUsd, 0);
       newAlerts.push({
-        id: 'medium-summary',
+        id: 'low-summary',
         type: 'info',
-        title: 'Medium Whale Activity',
-        message: `${mediumTxs.length} transactions totaling ${formatUsd(totalVolume)}`,
+        title: 'Smaller Whale Activity',
+        message: `${lowTxs.length} transactions totaling ${formatUsd(totalVolume)}`,
         timestamp: new Date(Date.now() - 180000),
         severity: 'low',
       });
@@ -137,18 +141,27 @@ export const WhaleAlertsFeed = ({ transactions, isLoading, prices }: WhaleAlerts
 
     setAlerts(newAlerts.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()));
 
-    // Show toast for new high-severity alerts
+    // Send push notifications for high-severity transactions
     const highSeverityTxs = transactions.filter(tx => tx.significance === 'high');
     highSeverityTxs.forEach(tx => {
       if (!notifiedHashes.has(tx.hash)) {
+        // Show in-app toast
         toast.warning(`🐋 ${formatUsd(tx.amountUsd)} ${tx.blockchain.toUpperCase()} whale alert!`, {
-          description: tx.type === 'exchange_inflow' ? 'Moved to exchange' : 'Large transfer detected',
+          description: tx.type === 'exchange_inflow' ? 'Moved to exchange' : tx.type === 'exchange_outflow' ? 'Withdrawn from exchange' : 'Large transfer detected',
           duration: 5000,
         });
+        
+        // Send browser push notification
+        sendNotification({
+          title: `🐋 ${tx.blockchain.toUpperCase()} Whale Alert`,
+          body: `${formatUsd(tx.amountUsd)} ${tx.type === 'exchange_inflow' ? 'moved to exchange' : tx.type === 'exchange_outflow' ? 'withdrawn from exchange' : 'transferred'}`,
+          data: { hash: tx.hash, blockchain: tx.blockchain },
+        });
+        
         setNotifiedHashes(prev => new Set([...prev, tx.hash]));
       }
     });
-  }, [transactions, prices]);
+  }, [transactions, prices, sendNotification]);
 
   if (isLoading) {
     return (
@@ -203,6 +216,21 @@ export const WhaleAlertsFeed = ({ transactions, isLoading, prices }: WhaleAlerts
             Live Alerts
           </div>
           <div className="flex items-center gap-2">
+            {isSupported && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={toggleNotifications}
+                className={`h-8 px-2 ${isEnabled ? 'text-success' : 'text-muted-foreground'}`}
+                title={isEnabled ? 'Disable push notifications' : 'Enable push notifications'}
+              >
+                {isEnabled ? (
+                  <Bell className="h-4 w-4" />
+                ) : (
+                  <BellOff className="h-4 w-4" />
+                )}
+              </Button>
+            )}
             <span className="animate-pulse h-2 w-2 rounded-full bg-success" />
             <span className="text-xs text-muted-foreground">{alerts.length} alerts</span>
           </div>
@@ -261,6 +289,33 @@ export const WhaleAlertsFeed = ({ transactions, isLoading, prices }: WhaleAlerts
             )}
           </div>
         </ScrollArea>
+
+        {/* Push Notification Status */}
+        {isSupported && (
+          <div className="mt-4 pt-4 border-t border-border/30">
+            <Button
+              variant={isEnabled ? "default" : "outline"}
+              size="sm"
+              className="w-full"
+              onClick={toggleNotifications}
+            >
+              {isEnabled ? (
+                <>
+                  <Bell className="h-4 w-4 mr-2" />
+                  Push Notifications Enabled
+                </>
+              ) : (
+                <>
+                  <BellOff className="h-4 w-4 mr-2" />
+                  Enable Push Notifications
+                </>
+              )}
+            </Button>
+            <p className="text-[10px] text-muted-foreground text-center mt-2">
+              {isEnabled ? 'You\'ll receive alerts even when this tab is closed' : 'Get notified of whale activity even when away'}
+            </p>
+          </div>
+        )}
 
         {/* Quick Stats at Bottom */}
         <div className="mt-4 pt-4 border-t border-border/30">
