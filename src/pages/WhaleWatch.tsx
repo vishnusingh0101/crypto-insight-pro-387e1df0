@@ -10,8 +10,11 @@ import {
   TrendingDown,
   Filter,
   RefreshCw,
-  Zap
+  Zap,
+  Bell,
+  BellOff
 } from "lucide-react";
+import { useWhaleNotifications } from "@/hooks/useWhaleNotifications";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -53,6 +56,7 @@ interface WhaleTrackerData {
 const WhaleWatch = () => {
   const [selectedBlockchain, setSelectedBlockchain] = useState<'all' | 'bitcoin' | 'ethereum'>('all');
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const { isSupported, isEnabled, toggleNotifications } = useWhaleNotifications();
 
   const { data, isLoading, error, refetch, isFetching } = useQuery<WhaleTrackerData>({
     queryKey: ['whale-watch', selectedBlockchain],
@@ -93,6 +97,21 @@ const WhaleWatch = () => {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              {isSupported && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={toggleNotifications}
+                  className={isEnabled ? "border-primary text-primary" : ""}
+                >
+                  {isEnabled ? (
+                    <Bell className="h-4 w-4 mr-2" />
+                  ) : (
+                    <BellOff className="h-4 w-4 mr-2" />
+                  )}
+                  {isEnabled ? 'Alerts On' : 'Alerts Off'}
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
