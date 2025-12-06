@@ -4,59 +4,31 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 import { TrendingUp } from "lucide-react";
 
+interface HistoricalDataPoint {
+  timestamp: string;
+  btcVolume: number;
+  ethVolume: number;
+  totalVolume: number;
+}
+
 interface WhaleVolumeChartProps {
-  data?: {
-    transactions: Array<{
-      blockchain: string;
-      amountUsd: number;
-      timestamp: string;
-    }>;
+  historical?: {
+    hourly: HistoricalDataPoint[];
   };
   isLoading: boolean;
 }
 
-export const WhaleVolumeChart = ({ data, isLoading }: WhaleVolumeChartProps) => {
+export const WhaleVolumeChart = ({ historical, isLoading }: WhaleVolumeChartProps) => {
   const chartData = useMemo(() => {
-    if (!data?.transactions) return [];
+    if (!historical?.hourly?.length) return [];
     
-    // Generate simulated historical data based on current transactions
-    const now = new Date();
-    const hours = Array.from({ length: 24 }, (_, i) => {
-      const date = new Date(now);
-      date.setHours(date.getHours() - (23 - i));
-      return {
-        time: date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-        hour: date.getHours(),
-      };
-    });
-
-    // Distribute transactions across hours with some randomization
-    const baseVolume = (data.transactions.reduce((sum, tx) => sum + tx.amountUsd, 0) / 24);
-    
-    return hours.map((h, index) => {
-      // Add realistic variance
-      const variance = 0.3 + Math.random() * 1.4;
-      const btcTxs = data.transactions.filter(tx => tx.blockchain === 'bitcoin');
-      const ethTxs = data.transactions.filter(tx => tx.blockchain === 'ethereum');
-      
-      const btcBase = btcTxs.length > 0 
-        ? (btcTxs.reduce((sum, tx) => sum + tx.amountUsd, 0) / 24) * variance
-        : baseVolume * 0.6 * variance;
-      const ethBase = ethTxs.length > 0
-        ? (ethTxs.reduce((sum, tx) => sum + tx.amountUsd, 0) / 24) * variance
-        : baseVolume * 0.4 * variance;
-      
-      // Add time-based patterns (more activity during certain hours)
-      const hourMultiplier = h.hour >= 8 && h.hour <= 18 ? 1.3 : 0.7;
-      
-      return {
-        time: h.time,
-        bitcoin: Math.round(btcBase * hourMultiplier),
-        ethereum: Math.round(ethBase * hourMultiplier),
-        total: Math.round((btcBase + ethBase) * hourMultiplier),
-      };
-    });
-  }, [data]);
+    return historical.hourly.map((d) => ({
+      time: new Date(d.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      bitcoin: d.btcVolume,
+      ethereum: d.ethVolume,
+      total: d.totalVolume,
+    }));
+  }, [historical]);
 
   if (isLoading) {
     return (

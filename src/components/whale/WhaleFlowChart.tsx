@@ -4,46 +4,32 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, ReferenceLine } from "recharts";
 import { ArrowLeftRight } from "lucide-react";
 
+interface HistoricalDataPoint {
+  timestamp: string;
+  inflows: number;
+  outflows: number;
+  netFlow: number;
+}
+
 interface WhaleFlowChartProps {
-  data?: {
-    transactions: Array<{
-      type: string;
-      amountUsd: number;
-      timestamp: string;
-    }>;
-    summary: {
-      exchangeInflows: number;
-      exchangeOutflows: number;
-    };
+  historical?: {
+    hourly: HistoricalDataPoint[];
   };
   isLoading: boolean;
 }
 
-export const WhaleFlowChart = ({ data, isLoading }: WhaleFlowChartProps) => {
+export const WhaleFlowChart = ({ historical, isLoading }: WhaleFlowChartProps) => {
   const chartData = useMemo(() => {
-    if (!data?.transactions) return [];
+    if (!historical?.hourly?.length) return [];
     
-    // Generate 12-hour flow data
-    const now = new Date();
-    return Array.from({ length: 12 }, (_, i) => {
-      const date = new Date(now);
-      date.setHours(date.getHours() - (11 - i));
-      
-      // Simulate realistic flow patterns
-      const baseInflow = (data.summary.exchangeInflows / 12) * (0.5 + Math.random());
-      const baseOutflow = (data.summary.exchangeOutflows / 12) * (0.5 + Math.random());
-      
-      // Add time-based variance
-      const hourMultiplier = date.getHours() >= 9 && date.getHours() <= 17 ? 1.4 : 0.6;
-      
-      return {
-        time: date.toLocaleTimeString('en-US', { hour: '2-digit' }),
-        inflow: -Math.round(baseInflow * hourMultiplier * 1000000), // Negative for visual effect
-        outflow: Math.round(baseOutflow * hourMultiplier * 1000000),
-        netFlow: Math.round((baseOutflow - baseInflow) * hourMultiplier * 1000000),
-      };
-    });
-  }, [data]);
+    // Take last 12 hours
+    return historical.hourly.slice(-12).map((d) => ({
+      time: new Date(d.timestamp).toLocaleTimeString('en-US', { hour: '2-digit' }),
+      inflow: -d.inflows, // Negative for visual
+      outflow: d.outflows,
+      netFlow: d.netFlow,
+    }));
+  }, [historical]);
 
   if (isLoading) {
     return (
