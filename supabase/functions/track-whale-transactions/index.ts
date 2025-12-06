@@ -12,6 +12,8 @@ interface WhaleTransaction {
   amountUsd: number;
   from: string;
   to: string;
+  fromLabel?: string;
+  toLabel?: string;
   timestamp: string;
   type: 'transfer' | 'exchange_inflow' | 'exchange_outflow' | 'unknown';
   significance: 'high' | 'medium' | 'low';
@@ -41,7 +43,82 @@ interface PriceCorrelation {
   ethPrice: number;
 }
 
-// Known exchange addresses
+// Known whale wallet addresses with labels
+const KNOWN_WALLETS: Record<string, { name: string; type: 'exchange' | 'institution' | 'fund' | 'defi' | 'foundation' }> = {
+  // Bitcoin Exchanges
+  'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh': { name: 'Binance', type: 'exchange' },
+  '3M219KR5vEneNb47ewrPfWyb5jQ2DjxRP6': { name: 'Binance Cold', type: 'exchange' },
+  'bc1qgdjqv0av3q56jvd82tkdjpy7gdp9ut8tlqmgrpmv24sq90ecnvqqjwvw97': { name: 'Bitfinex', type: 'exchange' },
+  '1NDyJtNTjmwk5xPNhjgAMu4HDHigtobu1s': { name: 'Binance', type: 'exchange' },
+  '34xp4vRoCGJym3xR7yCVPFHoCNxv4Twseo': { name: 'Binance Cold', type: 'exchange' },
+  'bc1qm34lsc65zpw79lxes69zkqmk6ee3ewf0j77s3h': { name: 'Kraken', type: 'exchange' },
+  '1FzWLkAahHooV3kzTgyx6qsswXJ6sCXkSR': { name: 'Coinbase', type: 'exchange' },
+  'bc1qa5wkgaew2dkv56kfvj49j0av5nml45x9ek9hz6': { name: 'Coinbase Prime', type: 'exchange' },
+  '3LYJfcfHPXYJreMsASk2jkn69LWEYKzexb': { name: 'OKX', type: 'exchange' },
+  '1LQoWist8KkaUXSPKZHNvEyfrEkPHzSsCd': { name: 'Bitstamp', type: 'exchange' },
+  // Bitcoin Institutions
+  'bc1qazcm763858nkj2dj986etajv6wquslv8uxwczt': { name: 'MicroStrategy', type: 'institution' },
+  '1P5ZEDWTKTFGxQjZphgWPQUpe554WKDfHQ': { name: 'MicroStrategy', type: 'institution' },
+  'bc1q7ydrtdn8z62xhslqyqtyt38mm4e2c4h3mxjkug': { name: 'Tesla', type: 'institution' },
+  '3LQUu4v9z6KNch71j7kbj8GPeAGUo1FW6a': { name: 'Grayscale GBTC', type: 'fund' },
+  '34GkT4Xg4mWHvDPy7BZWjhGAFv9XKU9Kq4': { name: 'Grayscale GBTC', type: 'fund' },
+  'bc1qjasf9z3h7w3jspkhtgatgpyvvzgpa2wwd2lr0eh5tx44reyn2k7sfc27a4': { name: 'Fidelity', type: 'fund' },
+  '3MnMfDpNxJjEVMCY8oWozmixEL3jvkNjCY': { name: 'Block.one', type: 'institution' },
+  // Ethereum Exchanges
+  '0x28c6c06298d514db089934071355e5743bf21d60': { name: 'Binance', type: 'exchange' },
+  '0x21a31ee1afc51d94c2efccaa2092ad1028285549': { name: 'Binance', type: 'exchange' },
+  '0xdfd5293d8e347dfe59e90efd55b2956a1343963d': { name: 'Binance', type: 'exchange' },
+  '0x47ac0fb4f2d84898e4d9e7b4dab3c24507a6d503': { name: 'Binance', type: 'exchange' },
+  '0x564286362092d8e7936f0549571a803b203aaced': { name: 'Binance Cold', type: 'exchange' },
+  '0x2faf487a4414fe77e2327f0bf4ae2a264a776ad2': { name: 'FTX', type: 'exchange' },
+  '0x267be1c1d684f78cb4f6a176c4911b741e4ffdc0': { name: 'Kraken', type: 'exchange' },
+  '0xa910f92acdaf488fa6ef02174fb86208ad7722ba': { name: 'Kraken', type: 'exchange' },
+  '0x503828976d22510aad0201ac7ec88293211d23da': { name: 'Coinbase', type: 'exchange' },
+  '0xddfabcdc4d8ffc6d5beaf154f18b778f892a0740': { name: 'Coinbase', type: 'exchange' },
+  '0x3cd751e6b0078be393132286c442345e5dc49699': { name: 'Coinbase', type: 'exchange' },
+  '0xb5d85cbf7cb3ee0d56b3bb207d5fc4b82f43f511': { name: 'Coinbase', type: 'exchange' },
+  '0xeb2629a2734e272bcc07bda959863f316f4bd4cf': { name: 'Coinbase Prime', type: 'exchange' },
+  '0x6cc5f688a315f3dc28a7781717a9a798a59fda7b': { name: 'OKX', type: 'exchange' },
+  '0x98ec059dc3adfbdd63429454aeb0c990fba4a128': { name: 'OKX', type: 'exchange' },
+  '0x1db92e2eebc8e0c075a02bea49a2935bcd2dfcf4': { name: 'Gemini', type: 'exchange' },
+  '0xd24400ae8bfebb18ca49be86258a3c749cf46853': { name: 'Gemini', type: 'exchange' },
+  '0x61edcdf5bb737adffe5043706e7c5bb1f1a56eea': { name: 'Gemini', type: 'exchange' },
+  '0xe0f0cfde7ee664943906f17f7f14342e76a5cec7': { name: 'Bitfinex', type: 'exchange' },
+  // Ethereum Institutions & Funds
+  '0x40b38765696e3d5d8d9d834d8aad4bb6e418e489': { name: 'Grayscale ETH', type: 'fund' },
+  '0x7be8076f4ea4a4ad08075c2508e481d6c946d12b': { name: 'OpenSea', type: 'defi' },
+  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2': { name: 'WETH Contract', type: 'defi' },
+  '0x00000000006c3852cbef3e08e8df289169ede581': { name: 'Seaport', type: 'defi' },
+  '0x1111111254fb6c44bac0bed2854e76f90643097d': { name: '1inch', type: 'defi' },
+  '0x7a250d5630b4cf539739df2c5dacb4c659f2488d': { name: 'Uniswap V2', type: 'defi' },
+  '0xe592427a0aece92de3edee1f18e0157c05861564': { name: 'Uniswap V3', type: 'defi' },
+  '0xdef1c0ded9bec7f1a1670819833240f027b25eff': { name: '0x Exchange', type: 'defi' },
+  '0x3ee18b2214aff97000d974cf647e7c347e8fa585': { name: 'Wormhole', type: 'defi' },
+  '0xae7ab96520de3a18e5e111b5eaab095312d7fe84': { name: 'Lido stETH', type: 'defi' },
+  '0xdc24316b9ae028f1497c275eb9192a3ea0f67022': { name: 'Lido', type: 'defi' },
+  '0xde0b295669a9fd93d5f28d9ec85e40f4cb697bae': { name: 'Ethereum Foundation', type: 'foundation' },
+  '0xb20411c403687d1036e05571e9961b4fe196e085': { name: 'Jump Trading', type: 'institution' },
+  '0x5f65f7b609678448494de4c87521cdf6cef1e932': { name: 'Galaxy Digital', type: 'institution' },
+  '0x8103683202aa8da10536036edef04cdd865c225e': { name: 'Alameda Research', type: 'institution' },
+  '0x1b3cb81e51011b549d78bf720b0d924ac763a7c2': { name: 'Wintermute', type: 'institution' },
+  '0x0000000000000000000000000000000000000000': { name: 'Null Address', type: 'defi' },
+};
+
+function getWalletLabel(address: string): { name: string; type: string } | undefined {
+  const lowerAddress = address.toLowerCase();
+  for (const [walletAddress, info] of Object.entries(KNOWN_WALLETS)) {
+    if (walletAddress.toLowerCase() === lowerAddress) {
+      return info;
+    }
+    // Partial match for addresses that might be truncated
+    if (lowerAddress.includes(walletAddress.toLowerCase().slice(0, 20))) {
+      return info;
+    }
+  }
+  return undefined;
+}
+
+// Known exchange addresses for type detection
 const EXCHANGE_ADDRESSES: Record<string, string[]> = {
   bitcoin: [
     'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh',
@@ -286,6 +363,8 @@ async function fetchBitcoinWhaleTransactions(btcPrice: number): Promise<WhaleTra
       if (amountUsd >= WHALE_THRESHOLDS.bitcoin.low) {
         const fromAddress = tx.inputs?.[0]?.prev_out?.addr || 'Unknown';
         const toAddress = tx.out?.[0]?.addr || 'Unknown';
+        const fromLabel = getWalletLabel(fromAddress);
+        const toLabel = getWalletLabel(toAddress);
         
         transactions.push({
           hash: tx.hash,
@@ -294,6 +373,8 @@ async function fetchBitcoinWhaleTransactions(btcPrice: number): Promise<WhaleTra
           amountUsd,
           from: fromAddress,
           to: toAddress,
+          fromLabel: fromLabel?.name,
+          toLabel: toLabel?.name,
           timestamp: new Date(tx.time * 1000).toISOString(),
           type: determineTransactionType(fromAddress, toAddress, 'bitcoin'),
           significance: getSignificance(amountUsd, 'bitcoin'),
@@ -388,6 +469,9 @@ async function fetchEthereumWhaleTransactions(ethPrice: number): Promise<WhaleTr
           const amountUsd = amountEth * ethPrice;
           
           if (amountUsd >= WHALE_THRESHOLDS.ethereum.low) {
+            const fromLabel = getWalletLabel(tx.from);
+            const toLabel = getWalletLabel(tx.to || '');
+            
             transactions.push({
               hash: tx.hash,
               blockchain: 'ethereum',
@@ -395,6 +479,8 @@ async function fetchEthereumWhaleTransactions(ethPrice: number): Promise<WhaleTr
               amountUsd,
               from: tx.from,
               to: tx.to || 'Contract Creation',
+              fromLabel: fromLabel?.name,
+              toLabel: toLabel?.name,
               timestamp: new Date().toISOString(),
               type: determineTransactionType(tx.from, tx.to || '', 'ethereum'),
               significance: getSignificance(amountUsd, 'ethereum'),
