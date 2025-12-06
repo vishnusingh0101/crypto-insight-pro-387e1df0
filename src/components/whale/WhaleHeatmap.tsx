@@ -4,52 +4,80 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Activity } from "lucide-react";
 
+interface HistoricalDataPoint {
+  timestamp: string;
+  hour: number;
+  day: string;
+  transactionCount: number;
+  totalVolume: number;
+}
+
 interface WhaleHeatmapProps {
-  data?: {
-    transactions: Array<{
-      blockchain: string;
-      amountUsd: number;
-      timestamp: string;
-      significance: string;
-    }>;
+  historical?: {
+    daily: HistoricalDataPoint[];
+    hourly: HistoricalDataPoint[];
   };
   isLoading: boolean;
 }
 
-export const WhaleHeatmap = ({ data, isLoading }: WhaleHeatmapProps) => {
+export const WhaleHeatmap = ({ historical, isLoading }: WhaleHeatmapProps) => {
   const heatmapData = useMemo(() => {
-    if (!data?.transactions) return [];
+    if (!historical?.hourly?.length) {
+      // Generate placeholder data based on typical patterns
+      const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const hours = Array.from({ length: 24 }, (_, i) => i);
+      
+      return days.map((day, dayIndex) => ({
+        day,
+        hours: hours.map((hour) => {
+          const isWeekday = dayIndex >= 1 && dayIndex <= 5;
+          const isActiveHour = hour >= 8 && hour <= 22;
+          const isPeakHour = hour >= 14 && hour <= 18;
+          
+          let intensity = Math.random() * 30 + 10;
+          if (isWeekday) intensity *= 1.3;
+          if (isActiveHour) intensity *= 1.5;
+          if (isPeakHour) intensity *= 1.4;
+          
+          return {
+            hour,
+            intensity: Math.min(100, Math.round(intensity)),
+            transactions: Math.round(Math.random() * 10 + 1),
+          };
+        }),
+      }));
+    }
     
-    // Generate 24-hour x 7-day heatmap simulation
+    // Build heatmap from actual historical data
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const hours = Array.from({ length: 24 }, (_, i) => i);
+    const hourlyMap = new Map<string, { count: number; volume: number }>();
     
-    const baseActivity = data.transactions.length;
+    historical.hourly.forEach((d) => {
+      const date = new Date(d.timestamp);
+      const key = `${date.getUTCDay()}-${date.getUTCHours()}`;
+      const existing = hourlyMap.get(key) || { count: 0, volume: 0 };
+      hourlyMap.set(key, {
+        count: existing.count + d.transactionCount,
+        volume: existing.volume + d.totalVolume,
+      });
+    });
+    
+    const maxVolume = Math.max(...Array.from(hourlyMap.values()).map(v => v.volume), 1);
     
     return days.map((day, dayIndex) => ({
       day,
-      hours: hours.map((hour) => {
-        // Realistic activity patterns
-        const isWeekday = dayIndex >= 1 && dayIndex <= 5;
-        const isActiveHour = hour >= 8 && hour <= 22;
-        const isPeakHour = hour >= 14 && hour <= 18;
-        
-        let activityLevel = Math.random();
-        if (isWeekday) activityLevel *= 1.3;
-        if (isActiveHour) activityLevel *= 1.5;
-        if (isPeakHour) activityLevel *= 1.4;
-        
-        // Scale to 0-100
-        const intensity = Math.min(100, Math.round(activityLevel * 50 + baseActivity * 2));
+      hours: Array.from({ length: 24 }, (_, hour) => {
+        const key = `${dayIndex}-${hour}`;
+        const data = hourlyMap.get(key) || { count: 0, volume: 0 };
         
         return {
           hour,
-          intensity,
-          transactions: Math.round(activityLevel * baseActivity * 0.3),
+          intensity: Math.round((data.volume / maxVolume) * 100),
+          transactions: data.count,
         };
       }),
     }));
-  }, [data]);
+  }, [historical]);
 
   if (isLoading) {
     return (
