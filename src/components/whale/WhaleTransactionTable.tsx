@@ -12,6 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { 
   ExternalLink, 
   Search, 
@@ -20,7 +21,11 @@ import {
   Activity,
   ChevronDown,
   ChevronUp,
-  List
+  List,
+  Building2,
+  Landmark,
+  Coins,
+  Wallet
 } from "lucide-react";
 
 interface WhaleTransaction {
@@ -30,6 +35,8 @@ interface WhaleTransaction {
   amountUsd: number;
   from: string;
   to: string;
+  fromLabel?: string;
+  toLabel?: string;
   timestamp: string;
   type: 'transfer' | 'exchange_inflow' | 'exchange_outflow' | 'unknown';
   significance: 'high' | 'medium' | 'low';
@@ -66,6 +73,65 @@ const getBlockchainExplorer = (hash: string, blockchain: string) => {
   return `https://etherscan.io/tx/${hash}`;
 };
 
+// Get icon and color for labeled wallets
+const getLabelStyle = (label: string) => {
+  const lowerLabel = label.toLowerCase();
+  
+  // Exchanges
+  if (['binance', 'coinbase', 'kraken', 'okx', 'gemini', 'bitfinex', 'bitstamp', 'ftx'].some(e => lowerLabel.includes(e))) {
+    return { icon: Building2, color: 'text-blue-400 bg-blue-400/10 border-blue-400/30' };
+  }
+  
+  // Institutions
+  if (['microstrategy', 'tesla', 'block.one', 'jump', 'galaxy', 'alameda', 'wintermute'].some(i => lowerLabel.includes(i))) {
+    return { icon: Landmark, color: 'text-purple-400 bg-purple-400/10 border-purple-400/30' };
+  }
+  
+  // Funds
+  if (['grayscale', 'fidelity', 'gbtc'].some(f => lowerLabel.includes(f))) {
+    return { icon: Coins, color: 'text-amber-400 bg-amber-400/10 border-amber-400/30' };
+  }
+  
+  // DeFi
+  if (['uniswap', '1inch', 'lido', 'opensea', 'weth', 'seaport', '0x', 'wormhole'].some(d => lowerLabel.includes(d))) {
+    return { icon: Activity, color: 'text-emerald-400 bg-emerald-400/10 border-emerald-400/30' };
+  }
+  
+  // Foundation
+  if (lowerLabel.includes('foundation')) {
+    return { icon: Wallet, color: 'text-cyan-400 bg-cyan-400/10 border-cyan-400/30' };
+  }
+  
+  return { icon: Wallet, color: 'text-muted-foreground bg-muted/20 border-border/50' };
+};
+
+const AddressCell = ({ address, label }: { address: string; label?: string }) => {
+  if (label) {
+    const { icon: Icon, color } = getLabelStyle(label);
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md border ${color} cursor-pointer`}>
+              <Icon className="h-3 w-3" />
+              <span className="text-xs font-medium">{label}</span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            <p className="font-mono text-xs">{address}</p>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
+  
+  return (
+    <span className="font-mono text-xs text-muted-foreground">
+      {truncateAddress(address)}
+    </span>
+  );
+};
+
 export const WhaleTransactionTable = ({ transactions, isLoading }: WhaleTransactionTableProps) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [sortField, setSortField] = useState<'amountUsd' | 'timestamp'>('amountUsd');
@@ -86,7 +152,9 @@ export const WhaleTransactionTable = ({ transactions, isLoading }: WhaleTransact
       const matchesSearch = 
         tx.hash.toLowerCase().includes(searchTerm.toLowerCase()) ||
         tx.from.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        tx.to.toLowerCase().includes(searchTerm.toLowerCase());
+        tx.to.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        tx.fromLabel?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        tx.toLabel?.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesType = filterType === 'all' || tx.type === filterType;
       return matchesSearch && matchesType;
     })
@@ -97,6 +165,9 @@ export const WhaleTransactionTable = ({ transactions, isLoading }: WhaleTransact
       }
       return (new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()) * multiplier;
     });
+
+  // Count labeled wallets
+  const labeledCount = transactions.filter(tx => tx.fromLabel || tx.toLabel).length;
 
   if (isLoading) {
     return (
@@ -137,16 +208,40 @@ export const WhaleTransactionTable = ({ transactions, isLoading }: WhaleTransact
             <List className="h-5 w-5 text-primary" />
             Transaction History
           </div>
-          <Badge variant="secondary">{filteredTransactions.length} transactions</Badge>
+          <div className="flex items-center gap-2">
+            {labeledCount > 0 && (
+              <Badge variant="secondary" className="bg-primary/10 text-primary">
+                {labeledCount} identified
+              </Badge>
+            )}
+            <Badge variant="secondary">{filteredTransactions.length} transactions</Badge>
+          </div>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Legend */}
+        <div className="flex flex-wrap gap-2 text-xs">
+          <span className="text-muted-foreground">Wallet Types:</span>
+          <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-blue-400/10 text-blue-400 border border-blue-400/30">
+            <Building2 className="h-3 w-3" /> Exchange
+          </div>
+          <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-purple-400/10 text-purple-400 border border-purple-400/30">
+            <Landmark className="h-3 w-3" /> Institution
+          </div>
+          <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-400/10 text-amber-400 border border-amber-400/30">
+            <Coins className="h-3 w-3" /> Fund
+          </div>
+          <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-400/10 text-emerald-400 border border-emerald-400/30">
+            <Activity className="h-3 w-3" /> DeFi
+          </div>
+        </div>
+
         {/* Filters */}
         <div className="flex flex-col sm:flex-row gap-3">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
-              placeholder="Search by hash or address..."
+              placeholder="Search by hash, address, or wallet name..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-9 bg-background/50"
@@ -175,8 +270,8 @@ export const WhaleTransactionTable = ({ transactions, isLoading }: WhaleTransact
             <Table>
               <TableHeader>
                 <TableRow className="bg-background/50 hover:bg-background/50">
-                  <TableHead className="w-[100px]">Chain</TableHead>
-                  <TableHead className="w-[100px]">Type</TableHead>
+                  <TableHead className="w-[80px]">Chain</TableHead>
+                  <TableHead className="w-[80px]">Type</TableHead>
                   <TableHead 
                     className="cursor-pointer hover:text-foreground transition-colors"
                     onClick={() => handleSort('amountUsd')}
@@ -187,8 +282,8 @@ export const WhaleTransactionTable = ({ transactions, isLoading }: WhaleTransact
                   </TableHead>
                   <TableHead>From</TableHead>
                   <TableHead>To</TableHead>
-                  <TableHead className="w-[100px]">Impact</TableHead>
-                  <TableHead className="w-[60px]">Link</TableHead>
+                  <TableHead className="w-[80px]">Impact</TableHead>
+                  <TableHead className="w-[50px]">Link</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -228,11 +323,11 @@ export const WhaleTransactionTable = ({ transactions, isLoading }: WhaleTransact
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {truncateAddress(tx.from)}
+                      <TableCell>
+                        <AddressCell address={tx.from} label={tx.fromLabel} />
                       </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {truncateAddress(tx.to)}
+                      <TableCell>
+                        <AddressCell address={tx.to} label={tx.toLabel} />
                       </TableCell>
                       <TableCell>
                         <Badge 
