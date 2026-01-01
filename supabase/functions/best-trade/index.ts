@@ -9,6 +9,30 @@ const corsHeaders = {
 const BUCKET_NAME = "market-cache";
 const FILE_PATH = "daily/full_market.json";
 
+// Conservative trading settings
+const CONSERVATIVE_CONFIG = {
+  // Only trade top 20 high-liquidity coins
+  MAX_RANK: 20,
+  MIN_VOLUME_24H: 100_000_000, // $100M minimum volume
+  
+  // RSI filters - only trade in neutral zone
+  RSI_MIN: 40,
+  RSI_MAX: 60,
+  
+  // Risk management
+  MAX_RISK_PERCENT: 0.5,
+  TARGET_PROFIT_MIN: 0.3,
+  TARGET_PROFIT_MAX: 0.8,
+  MIN_RISK_REWARD: 1.0,
+  
+  // Volatility filters
+  MAX_1H_CHANGE: 3, // Skip if 1h change > 3%
+  MAX_24H_CHANGE: 8, // Skip if 24h change > 8% (too volatile)
+  
+  // Trend alignment requirements
+  TREND_ALIGNMENT_REQUIRED: true,
+};
+
 type EnrichedCoin = {
   id: string;
   symbol: string;
@@ -37,286 +61,280 @@ type StoredPayload = {
   coins: EnrichedCoin[];
 };
 
-type TradeAction = "BUY" | "SELL";
+type TradeAction = "BUY" | "SELL" | "NO_TRADE";
 
-type BestTrade = {
+type TradeStatus = "SCANNING" | "FOUND" | "NO_OPPORTUNITY";
+
+type FilterResult = {
+  passed: boolean;
+  reason: string;
+};
+
+type ConservativeTrade = {
   coinId: string;
   coinName: string;
   coinSymbol: string;
   coinImage: string;
   action: TradeAction;
+  status: TradeStatus;
   currentPrice: number;
-  buyPrice: number;
+  entryPrice: number;
   targetPrice: number;
   stopLoss: number;
-  successProbability: number;
+  targetPercent: number;
+  riskPercent: number;
   riskReward: number;
+  successProbability: number;
   rsi14: number;
   atr14: number;
   priceChange1h: number;
   priceChange24h: number;
   priceChange7d: number;
-  priceChange30d: number;
   volume24h: number;
   marketCap: number;
   marketCapRank: number;
-  volumeToMcap: number;
+  trendAlignment: string;
+  filtersApplied: string[];
+  filtersPassed: string[];
+  filtersSkipped: string[];
   reasoning: string;
   updatedAt: string;
+  nextScanIn: string;
 };
 
-type TradeOpportunity = {
-  coin: EnrichedCoin;
+// Check if coin passes all conservative filters
+function applyConservativeFilters(coin: EnrichedCoin): { passed: boolean; results: FilterResult[] } {
+  const results: FilterResult[] = [];
+  
+  // Filter 1: Market cap rank (top 20 only)
+  const rankFilter: FilterResult = {
+    passed: coin.marketCapRank <= CONSERVATIVE_CONFIG.MAX_RANK,
+    reason: `Rank #${coin.marketCapRank} ${coin.marketCapRank <= CONSERVATIVE_CONFIG.MAX_RANK ? '✓' : `> ${CONSERVATIVE_CONFIG.MAX_RANK}`}`
+  };
+  results.push(rankFilter);
+  
+  // Filter 2: Minimum volume
+  const volumeFilter: FilterResult = {
+    passed: coin.volume24h >= CONSERVATIVE_CONFIG.MIN_VOLUME_24H,
+    reason: `Volume $${(coin.volume24h / 1_000_000).toFixed(0)}M ${coin.volume24h >= CONSERVATIVE_CONFIG.MIN_VOLUME_24H ? '✓' : '< $100M'}`
+  };
+  results.push(volumeFilter);
+  
+  // Filter 3: RSI in neutral zone (40-60)
+  const rsiFilter: FilterResult = {
+    passed: coin.rsi14 >= CONSERVATIVE_CONFIG.RSI_MIN && coin.rsi14 <= CONSERVATIVE_CONFIG.RSI_MAX,
+    reason: `RSI ${coin.rsi14.toFixed(1)} ${coin.rsi14 >= CONSERVATIVE_CONFIG.RSI_MIN && coin.rsi14 <= CONSERVATIVE_CONFIG.RSI_MAX ? '✓ (neutral zone)' : 'outside 40-60'}`
+  };
+  results.push(rsiFilter);
+  
+  // Filter 4: Not too volatile (1h change)
+  const volatility1hFilter: FilterResult = {
+    passed: Math.abs(coin.change1h) <= CONSERVATIVE_CONFIG.MAX_1H_CHANGE,
+    reason: `1h volatility ${Math.abs(coin.change1h).toFixed(2)}% ${Math.abs(coin.change1h) <= CONSERVATIVE_CONFIG.MAX_1H_CHANGE ? '✓' : '> 3%'}`
+  };
+  results.push(volatility1hFilter);
+  
+  // Filter 5: Not too volatile (24h change)
+  const volatility24hFilter: FilterResult = {
+    passed: Math.abs(coin.change24h) <= CONSERVATIVE_CONFIG.MAX_24H_CHANGE,
+    reason: `24h volatility ${Math.abs(coin.change24h).toFixed(2)}% ${Math.abs(coin.change24h) <= CONSERVATIVE_CONFIG.MAX_24H_CHANGE ? '✓' : '> 8%'}`
+  };
+  results.push(volatility24hFilter);
+  
+  // Filter 6: Trend alignment (15m & 1h trend must align)
+  // Using 1h and 24h as proxy since we don't have 15m data
+  const trendAligned = (coin.change1h > 0 && coin.change24h > 0) || (coin.change1h < 0 && coin.change24h < 0);
+  const trendFilter: FilterResult = {
+    passed: trendAligned,
+    reason: `Trend alignment ${trendAligned ? '✓' : 'mixed signals'}`
+  };
+  results.push(trendFilter);
+  
+  // Filter 7: No large impulsive candles (using 1h as proxy)
+  const noImpulsiveFilter: FilterResult = {
+    passed: Math.abs(coin.change1h) < 2,
+    reason: `No impulsive moves ${Math.abs(coin.change1h) < 2 ? '✓' : '> 2% 1h move'}`
+  };
+  results.push(noImpulsiveFilter);
+  
+  // Filter 8: Stable or increasing volume (volume > 5% of market cap)
+  const volumeStableFilter: FilterResult = {
+    passed: coin.volumeToMcap > 0.05,
+    reason: `Volume/MCap ${(coin.volumeToMcap * 100).toFixed(2)}% ${coin.volumeToMcap > 0.05 ? '✓' : '< 5%'}`
+  };
+  results.push(volumeStableFilter);
+  
+  const passed = results.every(r => r.passed);
+  return { passed, results };
+}
+
+// Calculate conservative trade setup (pullback/range only)
+function calculateConservativeSetup(coin: EnrichedCoin): {
   action: TradeAction;
-  score: number;
-};
-
-function scoreBuyOpportunity(coin: EnrichedCoin): number {
-  let score = 0;
-
-  const p1h = coin.change1h;
-  const p24 = coin.change24h;
-  const p7d = coin.change7d;
-  const p30d = coin.change30d;
-  const rsi = coin.rsi14;
+  entryPrice: number;
+  targetPrice: number;
+  stopLoss: number;
+  targetPercent: number;
+  riskPercent: number;
+  riskReward: number;
+  trendDirection: string;
+} {
+  const price = coin.currentPrice;
   const atr = coin.atr14;
-
-  // Liquidity scoring
-  if (coin.volume24h >= 200_000_000) score += 14;
-  else if (coin.volume24h >= 50_000_000) score += 10;
-  else if (coin.volume24h >= 10_000_000) score += 6;
-
-  // Market cap rank (safety)
-  if (coin.marketCapRank <= 10) score += 11;
-  else if (coin.marketCapRank <= 30) score += 8;
-  else if (coin.marketCapRank <= 100) score += 5;
-  else score += 2;
-
-  // Multi-timeframe bullish momentum
-  if (p30d > 20 && p7d > 10) score += 20;
-  else if (p30d > 8 && p7d > 5) score += 15;
-  else if (p7d > 2) score += 10;
-  else if (p7d < -5) score -= 12; // Penalize downtrends
-
-  // Daily momentum
-  if (p24 > 5) score += 10;
-  else if (p24 > 2) score += 7;
-  else if (p24 > 0) score += 4;
-  else if (p24 < -3) score -= 8;
-
-  // Hourly momentum
-  if (p1h > 1 && p1h < 6) score += 8;
-  else if (p1h > 0.3 && p1h <= 1) score += 5;
-  else if (p1h < -2) score -= 5;
-
-  // RSI for BUY (looking for healthy or oversold)
-  if (rsi >= 40 && rsi <= 60) score += 15; // Healthy continuation zone
-  else if (rsi > 60 && rsi <= 70) score += 8; // Still acceptable
-  else if (rsi < 30) score += 12; // Oversold bounce
-  else if (rsi > 75) score -= 15; // Too overbought
-
-  // Volatility for trading
-  if (atr >= 3 && atr <= 12) score += 10;
-  else if (atr >= 1.5 && atr < 3) score += 6;
-  else if (atr > 18) score -= 5;
-
-  // Volume to market cap ratio
-  if (coin.volumeToMcap > 0.12 && coin.volumeToMcap <= 0.5) score += 8;
-  else if (coin.volumeToMcap > 0.06) score += 5;
-  else if (coin.volumeToMcap < 0.015) score -= 5;
-
-  return Math.max(0, score);
-}
-
-function scoreSellOpportunity(coin: EnrichedCoin): number {
-  let score = 0;
-
-  const p1h = coin.change1h;
-  const p24 = coin.change24h;
-  const p7d = coin.change7d;
-  const p30d = coin.change30d;
-  const rsi = coin.rsi14;
-  const atr = coin.atr14;
-
-  // Liquidity scoring (same as buy)
-  if (coin.volume24h >= 200_000_000) score += 14;
-  else if (coin.volume24h >= 50_000_000) score += 10;
-  else if (coin.volume24h >= 10_000_000) score += 6;
-
-  // Market cap rank
-  if (coin.marketCapRank <= 10) score += 11;
-  else if (coin.marketCapRank <= 30) score += 8;
-  else if (coin.marketCapRank <= 100) score += 5;
-  else score += 2;
-
-  // Multi-timeframe bearish momentum
-  if (p30d < -15 && p7d < -8) score += 20;
-  else if (p30d < -8 && p7d < -5) score += 15;
-  else if (p7d < -3) score += 10;
-  else if (p7d > 5) score -= 12; // Penalize uptrends
-
-  // Daily bearish momentum
-  if (p24 < -5) score += 10;
-  else if (p24 < -2) score += 7;
-  else if (p24 < 0) score += 4;
-  else if (p24 > 3) score -= 8;
-
-  // Hourly bearish momentum
-  if (p1h < -1 && p1h > -6) score += 8;
-  else if (p1h < -0.3 && p1h >= -1) score += 5;
-  else if (p1h > 2) score -= 5;
-
-  // RSI for SELL (looking for overbought or weakening)
-  if (rsi >= 70) score += 15; // Overbought
-  else if (rsi >= 60 && rsi < 70) score += 10; // Getting overbought
-  else if (rsi >= 45 && rsi < 60) score += 5; // Neutral
-  else if (rsi < 30) score -= 15; // Too oversold
-
-  // Volatility for trading
-  if (atr >= 3 && atr <= 12) score += 10;
-  else if (atr >= 1.5 && atr < 3) score += 6;
-  else if (atr > 18) score -= 5;
-
-  // Volume to market cap ratio
-  if (coin.volumeToMcap > 0.12 && coin.volumeToMcap <= 0.5) score += 8;
-  else if (coin.volumeToMcap > 0.06) score += 5;
-  else if (coin.volumeToMcap < 0.015) score -= 5;
-
-  return Math.max(0, score);
-}
-
-function normalizeProbability(score: number): number {
-  const minP = 32;
-  const maxP = 92;
-  const minScore = 20;
-  const maxScore = 100;
-
-  const clamped = Math.max(minScore, Math.min(maxScore, score));
-  const ratio = (clamped - minScore) / (maxScore - minScore);
-  const prob = minP + ratio * (maxP - minP);
-
-  return Math.round(prob);
-}
-
-function calculateRiskReward(
-  action: TradeAction,
-  entry: number,
-  target: number,
-  stop: number,
-): number {
-  if (entry <= 0 || target <= 0 || stop <= 0) return 0;
-
-  let reward: number;
-  let risk: number;
-
-  if (action === "BUY") {
-    reward = target - entry;
-    risk = entry - stop;
-  } else {
-    reward = entry - target;
-    risk = stop - entry;
+  
+  // Determine trend direction from multi-timeframe analysis
+  const bullish = coin.change24h > 0 && coin.change7d > 0;
+  const bearish = coin.change24h < 0 && coin.change7d < 0;
+  
+  // Only pullback/range trades - no breakouts
+  // Looking for small retracements in the direction of the trend
+  
+  if (bullish && coin.change1h < 0 && coin.change1h > -1) {
+    // Bullish trend with small pullback - BUY opportunity
+    const targetPercent = Math.min(
+      CONSERVATIVE_CONFIG.TARGET_PROFIT_MAX,
+      Math.max(CONSERVATIVE_CONFIG.TARGET_PROFIT_MIN, atr * 0.3)
+    ) / 100;
+    
+    const riskPercent = targetPercent * 0.8; // Ensure at least 1:1 R:R
+    
+    return {
+      action: "BUY",
+      entryPrice: price,
+      targetPrice: price * (1 + targetPercent),
+      stopLoss: price * (1 - riskPercent),
+      targetPercent: targetPercent * 100,
+      riskPercent: riskPercent * 100,
+      riskReward: targetPercent / riskPercent,
+      trendDirection: "BULLISH"
+    };
   }
-
-  if (risk <= 0) return 0;
-  return Math.abs(reward / risk);
-}
-
-function buildReasoning(coin: EnrichedCoin, trade: BestTrade): string {
-  const reasons: string[] = [];
-
-  const { change24h: p24, change7d: p7d, change30d: p30d, change1h: p1h, rsi14: rsi, atr14: atr } = coin;
-
-  if (trade.action === "BUY") {
-    // Momentum analysis
-    if (p30d > 15 && p7d > 8) {
-      reasons.push(`strong multi-timeframe bullish momentum (+${p7d.toFixed(1)}% weekly, +${p30d.toFixed(1)}% monthly)`);
-    } else if (p7d > 3) {
-      reasons.push(`positive weekly trend (+${p7d.toFixed(1)}%)`);
+  
+  if (bearish && coin.change1h > 0 && coin.change1h < 1) {
+    // Bearish trend with small bounce - SELL opportunity
+    const targetPercent = Math.min(
+      CONSERVATIVE_CONFIG.TARGET_PROFIT_MAX,
+      Math.max(CONSERVATIVE_CONFIG.TARGET_PROFIT_MIN, atr * 0.3)
+    ) / 100;
+    
+    const riskPercent = targetPercent * 0.8;
+    
+    return {
+      action: "SELL",
+      entryPrice: price,
+      targetPrice: price * (1 - targetPercent),
+      stopLoss: price * (1 + riskPercent),
+      targetPercent: targetPercent * 100,
+      riskPercent: riskPercent * 100,
+      riskReward: targetPercent / riskPercent,
+      trendDirection: "BEARISH"
+    };
+  }
+  
+  // Range-bound trade detection
+  const priceRange = (coin.high24h - coin.low24h) / price;
+  const isRangeBound = priceRange < 0.05 && Math.abs(coin.change24h) < 2;
+  
+  if (isRangeBound) {
+    // Price near support in range
+    const midPoint = (coin.high24h + coin.low24h) / 2;
+    const nearSupport = price < midPoint * 0.995;
+    const nearResistance = price > midPoint * 1.005;
+    
+    if (nearSupport) {
+      const targetPercent = 0.5 / 100;
+      const riskPercent = 0.4 / 100;
+      
+      return {
+        action: "BUY",
+        entryPrice: price,
+        targetPrice: price * (1 + targetPercent),
+        stopLoss: price * (1 - riskPercent),
+        targetPercent: targetPercent * 100,
+        riskPercent: riskPercent * 100,
+        riskReward: targetPercent / riskPercent,
+        trendDirection: "RANGE (near support)"
+      };
     }
     
-    if (p24 > 3) {
-      reasons.push(`significant 24h gain (+${p24.toFixed(1)}%)`);
-    } else if (p24 > 0) {
-      reasons.push(`positive daily momentum (+${p24.toFixed(1)}%)`);
-    }
-
-    if (p1h > 0.5) {
-      reasons.push(`recent bullish action (+${p1h.toFixed(2)}% in 1h)`);
-    }
-
-    // RSI analysis
-    if (rsi >= 40 && rsi <= 60) {
-      reasons.push(`optimal RSI zone (${rsi.toFixed(1)}) for trend continuation`);
-    } else if (rsi < 30) {
-      reasons.push(`oversold RSI (${rsi.toFixed(1)}) signaling potential reversal`);
-    } else if (rsi > 60 && rsi <= 70) {
-      reasons.push(`RSI ${rsi.toFixed(1)} shows strength but not yet overbought`);
-    }
-
-    // Volatility and liquidity
-    if (atr >= 3 && atr <= 12) {
-      reasons.push(`ideal volatility (ATR ${atr.toFixed(1)}%) for swing trading`);
-    }
-    if (coin.volumeToMcap > 0.1) {
-      reasons.push(`exceptional liquidity (${(coin.volumeToMcap * 100).toFixed(1)}% volume/mcap ratio)`);
-    } else if (coin.volumeToMcap > 0.06) {
-      reasons.push("strong trading volume relative to market cap");
-    }
-
-    if (coin.marketCapRank <= 20) {
-      reasons.push(`blue-chip asset (rank #${coin.marketCapRank}) with institutional backing`);
-    } else if (coin.marketCapRank <= 50) {
-      reasons.push(`established top-50 asset (rank #${coin.marketCapRank})`);
-    }
-  } else {
-    // SELL reasoning
-    if (p30d < -10 && p7d < -5) {
-      reasons.push(`sustained bearish pressure (${p7d.toFixed(1)}% weekly, ${p30d.toFixed(1)}% monthly)`);
-    } else if (p7d < -3) {
-      reasons.push(`weakening weekly trend (${p7d.toFixed(1)}%)`);
-    }
-    
-    if (p24 < -3) {
-      reasons.push(`significant daily decline (${p24.toFixed(1)}%)`);
-    } else if (p24 < 0) {
-      reasons.push(`bearish daily pressure (${p24.toFixed(1)}%)`);
-    }
-
-    if (p1h < -0.5) {
-      reasons.push(`recent selling pressure (${p1h.toFixed(2)}% in 1h)`);
-    }
-
-    // RSI for short
-    if (rsi > 75) {
-      reasons.push(`severely overbought RSI (${rsi.toFixed(1)}) indicating correction risk`);
-    } else if (rsi > 70) {
-      reasons.push(`overbought RSI (${rsi.toFixed(1)}) suggesting pullback potential`);
-    } else if (rsi >= 60 && rsi <= 70) {
-      reasons.push(`elevated RSI (${rsi.toFixed(1)}) with weakening momentum`);
-    }
-
-    // Volatility and liquidity
-    if (atr >= 3 && atr <= 12) {
-      reasons.push(`favorable volatility (ATR ${atr.toFixed(1)}%) for short positioning`);
-    }
-    if (coin.volumeToMcap > 0.1) {
-      reasons.push(`high liquidity (${(coin.volumeToMcap * 100).toFixed(1)}% volume/mcap) allows clean exits`);
-    }
-
-    if (coin.marketCapRank <= 30) {
-      reasons.push(`liquid large-cap (rank #${coin.marketCapRank}) suitable for short trades`);
+    if (nearResistance) {
+      const targetPercent = 0.5 / 100;
+      const riskPercent = 0.4 / 100;
+      
+      return {
+        action: "SELL",
+        entryPrice: price,
+        targetPrice: price * (1 - targetPercent),
+        stopLoss: price * (1 + riskPercent),
+        targetPercent: targetPercent * 100,
+        riskPercent: riskPercent * 100,
+        riskReward: targetPercent / riskPercent,
+        trendDirection: "RANGE (near resistance)"
+      };
     }
   }
+  
+  // No valid setup found
+  return {
+    action: "NO_TRADE",
+    entryPrice: price,
+    targetPrice: price,
+    stopLoss: price,
+    targetPercent: 0,
+    riskPercent: 0,
+    riskReward: 0,
+    trendDirection: "UNCLEAR"
+  };
+}
 
-  const base = `${coin.name} has been identified as today's highest-probability ${trade.action} opportunity with a ${trade.successProbability}% estimated success rate.`;
-  const details = reasons.length
-    ? ` Key factors: ${reasons.join("; ")}.`
-    : "";
-  const risk = ` Risk/reward ratio: ${trade.riskReward}:1.`;
-  const caution =
-    " This analysis combines technical indicators (RSI, ATR), momentum metrics, and liquidity factors. Always perform your own due diligence and apply proper risk management.";
+// Score trade opportunity (lower is better for conservative trading)
+function scoreConservativeOpportunity(coin: EnrichedCoin, setup: ReturnType<typeof calculateConservativeSetup>): number {
+  if (setup.action === "NO_TRADE") return 0;
+  
+  let score = 50; // Base score
+  
+  // Higher score for better liquidity
+  if (coin.marketCapRank <= 5) score += 20;
+  else if (coin.marketCapRank <= 10) score += 15;
+  else if (coin.marketCapRank <= 20) score += 10;
+  
+  // Higher score for neutral RSI (closer to 50)
+  const rsiDeviation = Math.abs(coin.rsi14 - 50);
+  if (rsiDeviation <= 5) score += 15;
+  else if (rsiDeviation <= 10) score += 10;
+  
+  // Higher score for lower volatility
+  if (Math.abs(coin.change1h) < 0.5) score += 10;
+  if (Math.abs(coin.change24h) < 3) score += 10;
+  
+  // Higher score for better R:R
+  if (setup.riskReward >= 1.5) score += 10;
+  else if (setup.riskReward >= 1.2) score += 5;
+  
+  // Penalty for high ATR (more volatile)
+  if (coin.atr14 > 10) score -= 10;
+  else if (coin.atr14 > 5) score -= 5;
+  
+  return score;
+}
 
-  return base + details + risk + caution;
+function buildConservativeReasoning(coin: EnrichedCoin, trade: ConservativeTrade): string {
+  if (trade.action === "NO_TRADE") {
+    return `No qualifying trade found. All ${trade.filtersApplied.length} conservative filters were checked. ` +
+      `${trade.filtersPassed.length} passed, ${trade.filtersSkipped.length} failed. ` +
+      `Capital protection is priority - waiting for perfect setup.`;
+  }
+  
+  const action = trade.action === "BUY" ? "long" : "short";
+  const trendType = trade.trendAlignment.includes("RANGE") ? "range-bound" : "pullback";
+  
+  return `${coin.name} identified as a conservative ${trendType} ${action} opportunity. ` +
+    `Entry: $${trade.entryPrice.toFixed(2)}, Target: ${trade.targetPercent.toFixed(2)}% profit, ` +
+    `Stop: ${trade.riskPercent.toFixed(2)}% risk. ` +
+    `RSI at ${coin.rsi14.toFixed(1)} (neutral zone). ` +
+    `Risk:Reward ${trade.riskReward.toFixed(2)}:1. ` +
+    `${trade.filtersPassed.length}/${trade.filtersApplied.length} filters passed. ` +
+    `This is a statistically reliable, low-risk setup prioritizing capital protection over large gains.`;
 }
 
 serve(async (req) => {
@@ -328,6 +346,8 @@ serve(async (req) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseKey);
+
+    console.log("Conservative trade scanner starting - Capital protection priority");
 
     const { data, error } = await supabase.storage
       .from(BUCKET_NAME)
@@ -345,7 +365,7 @@ serve(async (req) => {
     const payload = JSON.parse(text) as StoredPayload;
     const coins = payload.coins ?? [];
 
-    // Check if data is stale (older than 1 hour)
+    // Check data freshness
     const updatedAt = new Date(payload.updatedAt);
     const now = new Date();
     const ageMs = now.getTime() - updatedAt.getTime();
@@ -353,11 +373,8 @@ serve(async (req) => {
     
     if (ageMs > oneHourMs) {
       console.log(`Market data is ${Math.round(ageMs / 60000)} minutes old, triggering refresh...`);
-      // Trigger background refresh but continue with current data
       const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-      const adminClient = createClient(supabaseUrl, serviceRoleKey);
       
-      // Fire and forget - don't wait for update to complete
       fetch(`${supabaseUrl}/functions/v1/update-market-data`, {
         method: 'POST',
         headers: {
@@ -374,97 +391,149 @@ serve(async (req) => {
       );
     }
 
-    // Evaluate all coins for both BUY and SELL opportunities
-    const opportunities: TradeOpportunity[] = [];
+    // Filter to top 20 coins only
+    const eligibleCoins = coins.filter(c => c.marketCapRank <= CONSERVATIVE_CONFIG.MAX_RANK);
+    console.log(`Scanning ${eligibleCoins.length} top-${CONSERVATIVE_CONFIG.MAX_RANK} coins...`);
 
-    for (const coin of coins) {
+    let bestTrade: ConservativeTrade | null = null;
+    let highestScore = 0;
+    const allFiltersApplied: string[] = [
+      "Top 20 rank",
+      "Min $100M volume",
+      "RSI 40-60",
+      "1h volatility < 3%",
+      "24h volatility < 8%",
+      "Trend alignment",
+      "No impulsive moves",
+      "Volume stability"
+    ];
+
+    for (const coin of eligibleCoins) {
       if (coin.currentPrice <= 0) continue;
       
-      const buyScore = scoreBuyOpportunity(coin);
-      const sellScore = scoreSellOpportunity(coin);
-
-      if (buyScore > 0) {
-        opportunities.push({ coin, action: "BUY", score: buyScore });
+      // Apply conservative filters
+      const { passed, results } = applyConservativeFilters(coin);
+      const filtersPassed = results.filter(r => r.passed).map(r => r.reason);
+      const filtersSkipped = results.filter(r => !r.passed).map(r => r.reason);
+      
+      if (!passed) {
+        console.log(`${coin.symbol}: SKIP - ${filtersSkipped[0]}`);
+        continue;
       }
-      if (sellScore > 0) {
-        opportunities.push({ coin, action: "SELL", score: sellScore });
+      
+      // Calculate conservative trade setup
+      const setup = calculateConservativeSetup(coin);
+      
+      if (setup.action === "NO_TRADE") {
+        console.log(`${coin.symbol}: No valid pullback/range setup`);
+        continue;
+      }
+      
+      // Verify minimum R:R
+      if (setup.riskReward < CONSERVATIVE_CONFIG.MIN_RISK_REWARD) {
+        console.log(`${coin.symbol}: R:R ${setup.riskReward.toFixed(2)} < 1:1 minimum`);
+        continue;
+      }
+      
+      // Score the opportunity
+      const score = scoreConservativeOpportunity(coin, setup);
+      
+      if (score > highestScore) {
+        highestScore = score;
+        
+        // Calculate success probability based on filter pass rate and setup quality
+        const filterPassRate = filtersPassed.length / results.length;
+        const baseProb = 55 + (filterPassRate * 25);
+        const setupBonus = setup.riskReward >= 1.2 ? 5 : 0;
+        const successProbability = Math.min(85, Math.round(baseProb + setupBonus));
+        
+        bestTrade = {
+          coinId: coin.id,
+          coinName: coin.name,
+          coinSymbol: coin.symbol.toUpperCase(),
+          coinImage: coin.image,
+          action: setup.action,
+          status: "FOUND",
+          currentPrice: coin.currentPrice,
+          entryPrice: setup.entryPrice,
+          targetPrice: setup.targetPrice,
+          stopLoss: setup.stopLoss,
+          targetPercent: setup.targetPercent,
+          riskPercent: setup.riskPercent,
+          riskReward: Number(setup.riskReward.toFixed(2)),
+          successProbability,
+          rsi14: coin.rsi14,
+          atr14: coin.atr14,
+          priceChange1h: coin.change1h,
+          priceChange24h: coin.change24h,
+          priceChange7d: coin.change7d,
+          volume24h: coin.volume24h,
+          marketCap: coin.marketCap,
+          marketCapRank: coin.marketCapRank,
+          trendAlignment: setup.trendDirection,
+          filtersApplied: allFiltersApplied,
+          filtersPassed,
+          filtersSkipped,
+          reasoning: "",
+          updatedAt: payload.updatedAt,
+          nextScanIn: "1 hour"
+        };
+        
+        console.log(`${coin.symbol}: QUALIFIED - ${setup.action} setup with score ${score}`);
       }
     }
 
-    if (opportunities.length === 0) {
-      return new Response(
-        JSON.stringify({ error: "No valid trading opportunities found" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } },
-      );
+    // If no trade found, return NO_TRADE status
+    if (!bestTrade) {
+      console.log("No qualifying conservative trade found - capital protection mode");
+      
+      const noTrade: ConservativeTrade = {
+        coinId: "",
+        coinName: "No Trade",
+        coinSymbol: "WAIT",
+        coinImage: "",
+        action: "NO_TRADE",
+        status: "NO_OPPORTUNITY",
+        currentPrice: 0,
+        entryPrice: 0,
+        targetPrice: 0,
+        stopLoss: 0,
+        targetPercent: 0,
+        riskPercent: 0,
+        riskReward: 0,
+        successProbability: 0,
+        rsi14: 0,
+        atr14: 0,
+        priceChange1h: 0,
+        priceChange24h: 0,
+        priceChange7d: 0,
+        volume24h: 0,
+        marketCap: 0,
+        marketCapRank: 0,
+        trendAlignment: "N/A",
+        filtersApplied: allFiltersApplied,
+        filtersPassed: [],
+        filtersSkipped: ["No coins passed all conservative filters"],
+        reasoning: "Market conditions do not meet conservative trading criteria. " +
+          "Capital protection is the priority - waiting for perfect setup. " +
+          "Trade LESS, but trade SMART. Will rescan in 1 hour.",
+        updatedAt: payload.updatedAt,
+        nextScanIn: "1 hour"
+      };
+      
+      return new Response(JSON.stringify(noTrade), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
     }
 
-    // Select the opportunity with the highest score
-    opportunities.sort((a, b) => b.score - a.score);
-    const bestOpportunity = opportunities[0];
-    
-    const best = bestOpportunity.coin;
-    const action = bestOpportunity.action;
-    const bestScore = bestOpportunity.score;
-    const successProbability = normalizeProbability(bestScore);
+    // Build reasoning for the best trade
+    const bestCoin = eligibleCoins.find(c => c.id === bestTrade!.coinId)!;
+    bestTrade.reasoning = buildConservativeReasoning(bestCoin, bestTrade);
 
-    console.log(`Best trade: ${action} ${best.name} with score ${bestScore} (${successProbability}% probability)`);
+    console.log(`Best conservative trade: ${bestTrade.action} ${bestTrade.coinName} @ $${bestTrade.entryPrice}`);
+    console.log(`Target: ${bestTrade.targetPercent}%, Stop: ${bestTrade.riskPercent}%, R:R: ${bestTrade.riskReward}:1`);
 
-    const price = best.currentPrice;
-
-    const atr = best.atr14;
-    const atrFactor = Math.min(Math.max(atr, 2), 15) / 100;
-    const trendBoost = Math.max(0, best.change7d) * 0.002;
-    const targetFactorRaw = 1 + atrFactor + trendBoost;
-    const targetFactor = Math.min(Math.max(targetFactorRaw, 1.04), 1.25);
-
-    const stopFactorRaw = 1 - Math.max(atrFactor * 0.7, 0.03);
-    const stopFactor = Math.max(stopFactorRaw, 0.88);
-
-    let buyPrice = price;
-    let targetPrice: number;
-    let stopLoss: number;
-
-    if (action === "BUY") {
-      targetPrice = price * targetFactor;
-      stopLoss = price * stopFactor;
-    } else {
-      const shortTargetFactor = 1 - (targetFactor - 1);
-      const shortStopFactor = 2 - stopFactor;
-      targetPrice = price * shortTargetFactor;
-      stopLoss = price * shortStopFactor;
-    }
-
-    const rr = calculateRiskReward(action, buyPrice, targetPrice, stopLoss);
-
-    const trade: BestTrade = {
-      coinId: best.id,
-      coinName: best.name,
-      coinSymbol: best.symbol.toUpperCase(),
-      coinImage: best.image,
-      action,
-      currentPrice: price,
-      buyPrice,
-      targetPrice,
-      stopLoss,
-      successProbability,
-      riskReward: Number(rr.toFixed(2)),
-      rsi14: best.rsi14,
-      atr14: best.atr14,
-      priceChange1h: best.change1h,
-      priceChange24h: best.change24h,
-      priceChange7d: best.change7d,
-      priceChange30d: best.change30d,
-      volume24h: best.volume24h,
-      marketCap: best.marketCap,
-      marketCapRank: best.marketCapRank,
-      volumeToMcap: best.volumeToMcap,
-      reasoning: "",
-      updatedAt: payload.updatedAt,
-    };
-
-    trade.reasoning = buildReasoning(best, trade);
-
-    return new Response(JSON.stringify(trade), {
+    return new Response(JSON.stringify(bestTrade), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err) {
