@@ -156,6 +156,11 @@ const BestTradeToday = () => {
 
   if (!bestTrade) return null;
 
+  // Ensure arrays are defined with defaults
+  const filtersApplied = bestTrade.filtersApplied ?? [];
+  const filtersPassed = bestTrade.filtersPassed ?? [];
+  const filtersSkipped = bestTrade.filtersSkipped ?? [];
+
   // NO_TRADE status - waiting for perfect setup
   if (bestTrade.action === "NO_TRADE") {
     return (
@@ -182,7 +187,7 @@ const BestTradeToday = () => {
           <div className="grid grid-cols-2 gap-4">
             <div className="p-3 bg-background/50 rounded-lg">
               <div className="text-xs text-muted-foreground mb-1">Filters Applied</div>
-              <div className="font-bold text-lg">{bestTrade.filtersApplied.length}</div>
+              <div className="font-bold text-lg">{filtersApplied.length}</div>
             </div>
             <div className="p-3 bg-background/50 rounded-lg">
               <div className="text-xs text-muted-foreground mb-1">Status</div>
@@ -236,7 +241,7 @@ const BestTradeToday = () => {
         </div>
         <CardDescription className="flex items-center gap-2">
           <CheckCircle2 className="h-4 w-4 text-green-500" />
-          {bestTrade.filtersPassed.length}/{bestTrade.filtersApplied.length} filters passed
+          {filtersPassed.length}/{filtersApplied.length} filters passed
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -347,19 +352,19 @@ const BestTradeToday = () => {
           <div className="flex items-center justify-between">
             <h4 className="font-semibold text-sm">Conservative Filters</h4>
             <Badge variant="outline" className="text-green-600 border-green-600">
-              {bestTrade.filtersPassed.length} Passed
+              {filtersPassed.length} Passed
             </Badge>
           </div>
           <div className="flex flex-wrap gap-2">
-            {bestTrade.filtersPassed.slice(0, 4).map((filter, idx) => (
+            {filtersPassed.slice(0, 4).map((filter, idx) => (
               <Badge key={idx} variant="secondary" className="text-xs gap-1">
                 <CheckCircle2 className="h-3 w-3 text-green-500" />
                 {filter.replace(' ✓', '').split(' ').slice(0, 3).join(' ')}
               </Badge>
             ))}
-            {bestTrade.filtersPassed.length > 4 && (
+            {filtersPassed.length > 4 && (
               <Badge variant="outline" className="text-xs">
-                +{bestTrade.filtersPassed.length - 4} more
+                +{filtersPassed.length - 4} more
               </Badge>
             )}
           </div>
