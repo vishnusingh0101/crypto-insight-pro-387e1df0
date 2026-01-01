@@ -12,7 +12,8 @@ import {
   RefreshCw,
   Zap,
   Bell,
-  BellOff
+  BellOff,
+  Brain
 } from "lucide-react";
 import { useWhaleNotifications } from "@/hooks/useWhaleNotifications";
 import { Card, CardContent } from "@/components/ui/card";
@@ -27,6 +28,7 @@ import { WhaleAlertsFeed } from "@/components/whale/WhaleAlertsFeed";
 import { WhaleStats } from "@/components/whale/WhaleStats";
 import { WhaleHistoricalAnalytics } from "@/components/whale/WhaleHistoricalAnalytics";
 import { WhalePriceCorrelation } from "@/components/whale/WhalePriceCorrelation";
+import { WhaleIntelligence } from "@/components/whale/WhaleIntelligence";
 
 interface WhaleTransaction {
   hash: string;
@@ -131,6 +133,16 @@ const WhaleWatch = () => {
         </div>
 
         <WhaleStats data={data} isLoading={isLoading} />
+
+        {/* Whale Intelligence Panel - Primary View */}
+        <WhaleIntelligence 
+          transactions={data?.transactions || []} 
+          summary={{ 
+            exchangeInflows: data?.summary?.exchangeInflows || 0, 
+            exchangeOutflows: data?.summary?.exchangeOutflows || 0 
+          }}
+          isLoading={isLoading} 
+        />
 
         {data && (
           <Card className={`border-2 ${flowSentiment === 'bullish' ? 'border-success/50 bg-success/5' : flowSentiment === 'bearish' ? 'border-destructive/50 bg-destructive/5' : 'border-border/50 bg-card/50'}`}>
