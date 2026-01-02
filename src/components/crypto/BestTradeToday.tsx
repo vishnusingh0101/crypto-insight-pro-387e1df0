@@ -15,12 +15,26 @@ import {
   XCircle, 
   AlertTriangle,
   TrendingDown,
-  Activity
+  Activity,
+  BarChart3,
+  Zap,
+  Lock
 } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useRef } from "react";
 import { useToast } from "@/hooks/use-toast";
+
+type SystemPerformance = {
+  totalTrades: number;
+  successfulTrades: number;
+  failedTrades: number;
+  accuracyPercent: number;
+  consecutiveLosses: number;
+  capitalProtectionEnabled: boolean;
+  capitalProtectionReason: string | null;
+  mode: "paper" | "live";
+};
 
 type ConservativeTrade = {
   coinId: string;
@@ -28,7 +42,7 @@ type ConservativeTrade = {
   coinSymbol: string;
   coinImage: string;
   action: "BUY" | "SELL" | "NO_TRADE";
-  status: "SCANNING" | "FOUND" | "NO_OPPORTUNITY";
+  status: "SCANNING" | "FOUND" | "NO_OPPORTUNITY" | "CAPITAL_PROTECTION";
   currentPrice: number;
   entryPrice: number;
   targetPrice: number;
@@ -37,6 +51,9 @@ type ConservativeTrade = {
   riskPercent: number;
   riskReward: number;
   successProbability: number;
+  confidenceScore: number;
+  whaleIntent: "accumulating" | "distributing" | "neutral" | null;
+  whaleConfidence: number | null;
   rsi14: number;
   atr14: number;
   priceChange1h: number;
@@ -52,6 +69,7 @@ type ConservativeTrade = {
   reasoning: string;
   updatedAt: string;
   nextScanIn: string;
+  systemPerformance: SystemPerformance;
 };
 
 const BestTradeToday = () => {
@@ -62,7 +80,7 @@ const BestTradeToday = () => {
   const { data: bestTrade, isLoading, error } = useQuery({
     queryKey: ['bestTradeToday'],
     queryFn: async () => {
-      console.log("Fetching conservative trade analysis...");
+      console.log("Fetching professional trade analysis...");
       const { data, error } = await supabase.functions.invoke('best-trade');
 
       if (error) {
@@ -75,21 +93,15 @@ const BestTradeToday = () => {
               (details && typeof (details as any).error === "string" && (details as any).error) ||
               (typeof details === "string" ? details : "");
 
-            if (message.includes("Failed to load cached market data")) {
-              console.log("Cache empty, triggering market data update...");
-              const { error: updateError } = await supabase.functions.invoke('update-market-data');
-
-              if (updateError) {
-                console.error("Error updating market data:", updateError);
-                throw new Error("Failed to initialize market data");
-              }
-
+            if (message.includes("Failed to load")) {
+              console.log("Cache empty, triggering update...");
+              await supabase.functions.invoke('update-market-data');
               const { data: retryData, error: retryError } = await supabase.functions.invoke('best-trade');
               if (retryError) throw retryError;
               return retryData as ConservativeTrade;
             }
           } catch (ctxErr) {
-            console.warn("Failed to parse best-trade error context", ctxErr);
+            console.warn("Failed to parse error context", ctxErr);
           }
         }
 
@@ -98,21 +110,20 @@ const BestTradeToday = () => {
 
       return data as ConservativeTrade;
     },
-    refetchInterval: 3600000, // Refetch every 1 hour (conservative approach)
+    refetchInterval: 3600000, // 1 hour
     retry: 1,
   });
 
-  // Notification effect when trade is found
+  // Notification effect
   useEffect(() => {
     if (!bestTrade) return;
     
     const prev = previousTradeRef.current;
     
-    // Notify when a new trade is found
     if (bestTrade.action !== "NO_TRADE" && (!prev || prev.coinId !== bestTrade.coinId || prev.action !== bestTrade.action)) {
       toast({
-        title: `🎯 Trade Signal: ${bestTrade.action} ${bestTrade.coinSymbol}`,
-        description: `Entry: $${bestTrade.entryPrice.toFixed(2)} | Target: +${bestTrade.targetPercent.toFixed(2)}% | Stop: -${bestTrade.riskPercent.toFixed(2)}%`,
+        title: `🎯 ${bestTrade.systemPerformance?.mode?.toUpperCase() || 'PAPER'} Signal: ${bestTrade.action} ${bestTrade.coinSymbol}`,
+        description: `Confidence: ${bestTrade.confidenceScore}% | Entry: $${bestTrade.entryPrice.toFixed(2)} | R:R ${bestTrade.riskReward}:1`,
       });
     }
     
@@ -142,12 +153,12 @@ const BestTradeToday = () => {
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-destructive">
             <ShieldAlert className="h-6 w-6" />
-            Unable to Load Trade Analysis
+            System Offline
           </CardTitle>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            {error instanceof Error ? error.message : "Failed to fetch trade data. Please try again later."}
+            {error instanceof Error ? error.message : "Failed to connect to trading system."}
           </p>
         </CardContent>
       </Card>
@@ -156,19 +167,103 @@ const BestTradeToday = () => {
 
   if (!bestTrade) return null;
 
-  // Ensure arrays are defined with defaults
   const filtersApplied = bestTrade.filtersApplied ?? [];
   const filtersPassed = bestTrade.filtersPassed ?? [];
   const filtersSkipped = bestTrade.filtersSkipped ?? [];
+  const performance = bestTrade.systemPerformance ?? {
+    totalTrades: 0,
+    successfulTrades: 0,
+    failedTrades: 0,
+    accuracyPercent: 0,
+    consecutiveLosses: 0,
+    capitalProtectionEnabled: false,
+    capitalProtectionReason: null,
+    mode: 'paper'
+  };
 
-  // NO_TRADE status - waiting for perfect setup
+  // Performance metrics component
+  const PerformanceBar = () => (
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-3 p-4 bg-background/50 rounded-lg border border-border/50">
+      <div className="text-center">
+        <div className="text-xs text-muted-foreground">Mode</div>
+        <Badge variant={performance.mode === 'live' ? 'default' : 'secondary'} className="mt-1">
+          {performance.mode.toUpperCase()}
+        </Badge>
+      </div>
+      <div className="text-center">
+        <div className="text-xs text-muted-foreground">Total</div>
+        <div className="font-bold text-lg">{performance.totalTrades}</div>
+      </div>
+      <div className="text-center">
+        <div className="text-xs text-muted-foreground">Won</div>
+        <div className="font-bold text-lg text-green-600 dark:text-green-400">{performance.successfulTrades}</div>
+      </div>
+      <div className="text-center">
+        <div className="text-xs text-muted-foreground">Lost</div>
+        <div className="font-bold text-lg text-red-600 dark:text-red-400">{performance.failedTrades}</div>
+      </div>
+      <div className="text-center">
+        <div className="text-xs text-muted-foreground">Accuracy</div>
+        <div className={`font-bold text-lg ${
+          performance.accuracyPercent >= 60 ? 'text-green-600 dark:text-green-400' : 
+          performance.accuracyPercent >= 40 ? 'text-amber-600 dark:text-amber-400' : 'text-red-600 dark:text-red-400'
+        }`}>
+          {performance.accuracyPercent?.toFixed(1) || 0}%
+        </div>
+      </div>
+    </div>
+  );
+
+  // Capital Protection Mode UI
+  if (bestTrade.status === "CAPITAL_PROTECTION") {
+    return (
+      <Card className="border-2 border-red-500/30 bg-gradient-to-br from-red-500/5 to-red-500/10">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Lock className="h-6 w-6 text-red-500" />
+            Capital Protection Mode
+          </CardTitle>
+          <CardDescription className="flex items-center gap-2">
+            <Clock className="h-4 w-4" />
+            System paused • Scanning continues every hour
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <PerformanceBar />
+          
+          <div className="p-4 bg-red-500/10 rounded-lg border border-red-500/20">
+            <div className="flex items-center gap-2 mb-2">
+              <ShieldAlert className="h-5 w-5 text-red-500" />
+              <span className="font-semibold text-red-600 dark:text-red-400">Trading Halted</span>
+            </div>
+            <p className="text-sm text-muted-foreground">{bestTrade.reasoning}</p>
+          </div>
+          
+          {performance.consecutiveLosses > 0 && (
+            <div className="flex items-center justify-center gap-2 p-3 bg-amber-500/10 rounded-lg">
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              <span className="text-sm text-amber-600 dark:text-amber-400">
+                {performance.consecutiveLosses} consecutive losses triggered protection
+              </span>
+            </div>
+          )}
+          
+          <p className="text-xs text-center text-muted-foreground">
+            Trade LESS, trade SMART • Risk management is priority
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // NO_TRADE status
   if (bestTrade.action === "NO_TRADE") {
     return (
       <Card className="border-2 border-amber-500/30 bg-gradient-to-br from-amber-500/5 to-amber-500/10">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Shield className="h-6 w-6 text-amber-500" />
-            Capital Protection Mode
+            No Qualifying Trade
           </CardTitle>
           <CardDescription className="flex items-center gap-2">
             <Clock className="h-4 w-4" />
@@ -176,50 +271,54 @@ const BestTradeToday = () => {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <PerformanceBar />
+          
           <div className="p-4 bg-background/50 rounded-lg border border-amber-500/20">
             <div className="flex items-center gap-2 mb-2">
               <AlertTriangle className="h-5 w-5 text-amber-500" />
-              <span className="font-semibold">No Qualifying Trade Found</span>
+              <span className="font-semibold">Waiting for Setup</span>
             </div>
             <p className="text-sm text-muted-foreground">{bestTrade.reasoning}</p>
           </div>
           
+          {bestTrade.whaleIntent && bestTrade.whaleIntent !== 'neutral' && (
+            <div className="flex items-center gap-2 p-3 bg-primary/10 rounded-lg">
+              <Zap className="h-4 w-4 text-primary" />
+              <span className="text-sm">
+                Whale Activity: <span className="font-semibold capitalize">{bestTrade.whaleIntent}</span>
+                {bestTrade.whaleConfidence && ` (${bestTrade.whaleConfidence}% confidence)`}
+              </span>
+            </div>
+          )}
+          
           <div className="grid grid-cols-2 gap-4">
             <div className="p-3 bg-background/50 rounded-lg">
-              <div className="text-xs text-muted-foreground mb-1">Filters Applied</div>
+              <div className="text-xs text-muted-foreground mb-1">Filters Checked</div>
               <div className="font-bold text-lg">{filtersApplied.length}</div>
             </div>
             <div className="p-3 bg-background/50 rounded-lg">
               <div className="text-xs text-muted-foreground mb-1">Status</div>
-              <Badge variant="outline" className="text-amber-500 border-amber-500">
-                WAITING
-              </Badge>
+              <Badge variant="outline" className="text-amber-500 border-amber-500">SCANNING</Badge>
             </div>
           </div>
           
-          <div className="text-xs text-center text-muted-foreground">
-            Trade LESS, but trade SMART • Conservative filters active
-          </div>
+          <p className="text-xs text-center text-muted-foreground">
+            Operating as professional trading desk • Patience over profit
+          </p>
         </CardContent>
       </Card>
     );
   }
 
-  const getActionColor = (action: string) => {
-    return action === 'BUY' 
-      ? 'text-green-600 dark:text-green-400' 
-      : 'text-red-600 dark:text-red-400';
-  };
+  const getActionColor = (action: string) => 
+    action === 'BUY' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400';
 
-  const getActionBg = (action: string) => {
-    return action === 'BUY' 
-      ? 'bg-green-500/10 border-green-500/30' 
-      : 'bg-red-500/10 border-red-500/30';
-  };
+  const getActionBg = (action: string) => 
+    action === 'BUY' ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30';
 
-  const getSuccessColor = (prob: number) => {
-    if (prob >= 70) return 'text-green-600 dark:text-green-400';
-    if (prob >= 55) return 'text-amber-600 dark:text-amber-400';
+  const getConfidenceColor = (score: number) => {
+    if (score >= 80) return 'text-green-600 dark:text-green-400';
+    if (score >= 70) return 'text-amber-600 dark:text-amber-400';
     return 'text-muted-foreground';
   };
 
@@ -231,13 +330,18 @@ const BestTradeToday = () => {
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle className="flex items-center gap-2">
-            <Shield className="h-6 w-6 text-primary" />
-            Conservative Trade Signal
+            <BarChart3 className="h-6 w-6 text-primary" />
+            Trade Signal
           </CardTitle>
-          <Badge variant="outline" className="gap-1">
-            <Clock className="h-3 w-3" />
-            Scan: {bestTrade.nextScanIn}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant={performance.mode === 'live' ? 'default' : 'secondary'}>
+              {performance.mode.toUpperCase()}
+            </Badge>
+            <Badge variant="outline" className="gap-1">
+              <Clock className="h-3 w-3" />
+              {bestTrade.nextScanIn}
+            </Badge>
+          </div>
         </div>
         <CardDescription className="flex items-center gap-2">
           <CheckCircle2 className="h-4 w-4 text-green-500" />
@@ -245,11 +349,14 @@ const BestTradeToday = () => {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
+        {/* Performance Bar */}
+        <PerformanceBar />
+        
         {/* Coin Info */}
-        <div className="flex items-center gap-4 pb-4 border-b">
+        <div className="flex items-center gap-4 pb-4 border-b border-border/50">
           <img src={bestTrade.coinImage} alt={bestTrade.coinName} className="w-12 h-12 rounded-full" />
           <div className="flex-1">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h3 className="text-2xl font-bold">{bestTrade.coinName}</h3>
               <Badge variant="secondary">{bestTrade.coinSymbol}</Badge>
               <Badge variant="outline" className={`text-lg font-bold ${getActionColor(bestTrade.action)}`}>
@@ -266,18 +373,33 @@ const BestTradeToday = () => {
           </div>
         </div>
 
-        {/* Success Probability */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="font-medium">Trade Probability</span>
-            <span className={`text-3xl font-bold ${getSuccessColor(bestTrade.successProbability)}`}>
-              {bestTrade.successProbability}%
-            </span>
+        {/* Confidence & Whale */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-medium">Confidence</span>
+              <span className={`text-2xl font-bold ${getConfidenceColor(bestTrade.confidenceScore)}`}>
+                {bestTrade.confidenceScore}%
+              </span>
+            </div>
+            <Progress value={bestTrade.confidenceScore} className="h-2" />
           </div>
-          <Progress value={bestTrade.successProbability} className="h-3" />
+          
+          {bestTrade.whaleIntent && bestTrade.whaleIntent !== 'neutral' && (
+            <div className="p-3 bg-primary/10 rounded-lg">
+              <div className="text-xs text-muted-foreground mb-1">Whale Intel</div>
+              <div className="flex items-center gap-2">
+                <Zap className="h-4 w-4 text-primary" />
+                <span className="font-semibold capitalize">{bestTrade.whaleIntent}</span>
+                {bestTrade.whaleConfidence && (
+                  <span className="text-xs text-muted-foreground">({bestTrade.whaleConfidence}%)</span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Trade Targets - Conservative */}
+        {/* Trade Targets */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="space-y-1 p-3 bg-background/50 rounded-lg">
             <div className="flex items-center gap-1 text-muted-foreground text-xs">
@@ -309,16 +431,16 @@ const BestTradeToday = () => {
           <div className="space-y-1 p-3 bg-background/50 rounded-lg">
             <div className="flex items-center gap-1 text-muted-foreground text-xs">
               <Shield className="h-3 w-3" />
-              Risk:Reward
+              R:R
             </div>
             <div className="font-bold text-lg">{bestTrade.riskReward}:1</div>
           </div>
         </div>
 
         {/* Technical Indicators */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-4 gap-4">
           <div className="flex flex-col items-center justify-center p-3 bg-background/50 rounded-lg">
-            <span className="text-xs text-muted-foreground">RSI (14)</span>
+            <span className="text-xs text-muted-foreground">RSI</span>
             <span className={`text-xl font-bold ${
               bestTrade.rsi14 >= 40 && bestTrade.rsi14 <= 60 
                 ? 'text-green-600 dark:text-green-400' 
@@ -328,45 +450,22 @@ const BestTradeToday = () => {
             </span>
           </div>
           <div className="flex flex-col items-center justify-center p-3 bg-background/50 rounded-lg">
-            <span className="text-xs text-muted-foreground">1h Change</span>
+            <span className="text-xs text-muted-foreground">1h</span>
             <span className={`text-xl font-bold ${bestTrade.priceChange1h >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
               {bestTrade.priceChange1h >= 0 ? '+' : ''}{bestTrade.priceChange1h?.toFixed(2)}%
             </span>
           </div>
           <div className="flex flex-col items-center justify-center p-3 bg-background/50 rounded-lg">
-            <span className="text-xs text-muted-foreground">24h Change</span>
+            <span className="text-xs text-muted-foreground">24h</span>
             <span className={`text-xl font-bold ${bestTrade.priceChange24h >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
               {bestTrade.priceChange24h >= 0 ? '+' : ''}{bestTrade.priceChange24h?.toFixed(2)}%
             </span>
           </div>
           <div className="flex flex-col items-center justify-center p-3 bg-background/50 rounded-lg">
-            <span className="text-xs text-muted-foreground">7d Change</span>
+            <span className="text-xs text-muted-foreground">7d</span>
             <span className={`text-xl font-bold ${bestTrade.priceChange7d >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
               {bestTrade.priceChange7d >= 0 ? '+' : ''}{bestTrade.priceChange7d?.toFixed(2)}%
             </span>
-          </div>
-        </div>
-
-        {/* Filters Summary */}
-        <div className="p-4 bg-background/50 rounded-lg space-y-3">
-          <div className="flex items-center justify-between">
-            <h4 className="font-semibold text-sm">Conservative Filters</h4>
-            <Badge variant="outline" className="text-green-600 border-green-600">
-              {filtersPassed.length} Passed
-            </Badge>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {filtersPassed.slice(0, 4).map((filter, idx) => (
-              <Badge key={idx} variant="secondary" className="text-xs gap-1">
-                <CheckCircle2 className="h-3 w-3 text-green-500" />
-                {filter.replace(' ✓', '').split(' ').slice(0, 3).join(' ')}
-              </Badge>
-            ))}
-            {filtersPassed.length > 4 && (
-              <Badge variant="outline" className="text-xs">
-                +{filtersPassed.length - 4} more
-              </Badge>
-            )}
           </div>
         </div>
 
@@ -377,7 +476,7 @@ const BestTradeToday = () => {
         </div>
 
         <p className="text-xs text-center text-muted-foreground">
-          Capital protection priority • Click for detailed analysis →
+          Click for detailed analysis • Not financial advice
         </p>
       </CardContent>
     </Card>
