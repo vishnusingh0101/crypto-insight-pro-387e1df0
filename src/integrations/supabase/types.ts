@@ -122,6 +122,105 @@ export type Database = {
         }
         Relationships: []
       }
+      system_performance: {
+        Row: {
+          accuracy_percent: number | null
+          capital_protection_enabled: boolean
+          capital_protection_reason: string | null
+          consecutive_losses: number
+          failed_trades: number
+          id: string
+          last_updated_at: string
+          mode: string
+          successful_trades: number
+          total_trades: number
+        }
+        Insert: {
+          accuracy_percent?: number | null
+          capital_protection_enabled?: boolean
+          capital_protection_reason?: string | null
+          consecutive_losses?: number
+          failed_trades?: number
+          id?: string
+          last_updated_at?: string
+          mode?: string
+          successful_trades?: number
+          total_trades?: number
+        }
+        Update: {
+          accuracy_percent?: number | null
+          capital_protection_enabled?: boolean
+          capital_protection_reason?: string | null
+          consecutive_losses?: number
+          failed_trades?: number
+          id?: string
+          last_updated_at?: string
+          mode?: string
+          successful_trades?: number
+          total_trades?: number
+        }
+        Relationships: []
+      }
+      trade_history: {
+        Row: {
+          action: string
+          capital_protection_active: boolean | null
+          closed_at: string | null
+          coin_id: string
+          coin_name: string
+          coin_symbol: string
+          confidence_score: number | null
+          created_at: string
+          entry_price: number
+          exit_price: number | null
+          id: string
+          profit_loss_percent: number | null
+          reasoning: string | null
+          result: string | null
+          stop_loss: number
+          target_price: number
+          whale_intent: string | null
+        }
+        Insert: {
+          action: string
+          capital_protection_active?: boolean | null
+          closed_at?: string | null
+          coin_id: string
+          coin_name: string
+          coin_symbol: string
+          confidence_score?: number | null
+          created_at?: string
+          entry_price: number
+          exit_price?: number | null
+          id?: string
+          profit_loss_percent?: number | null
+          reasoning?: string | null
+          result?: string | null
+          stop_loss: number
+          target_price: number
+          whale_intent?: string | null
+        }
+        Update: {
+          action?: string
+          capital_protection_active?: boolean | null
+          closed_at?: string | null
+          coin_id?: string
+          coin_name?: string
+          coin_symbol?: string
+          confidence_score?: number | null
+          created_at?: string
+          entry_price?: number
+          exit_price?: number | null
+          id?: string
+          profit_loss_percent?: number | null
+          reasoning?: string | null
+          result?: string | null
+          stop_loss?: number
+          target_price?: number
+          whale_intent?: string | null
+        }
+        Relationships: []
+      }
       trade_predictions: {
         Row: {
           action: string
