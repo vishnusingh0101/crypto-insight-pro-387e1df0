@@ -36,6 +36,12 @@ const TRADING_CONFIG = {
   // Capital protection triggers
   MAX_CONSECUTIVE_LOSSES: 3,
   TIGHTEN_AFTER_LOSSES: 2,
+  
+  // Timing (in minutes)
+  SCAN_INTERVAL: 15,
+  TRADE_MONITOR_INTERVAL: 3,
+  COOLDOWN_MIN_MINUTES: 10,
+  CAPITAL_PROTECTION_REEVALUATE: 60, // 1 hour
 };
 
 type EnrichedCoin = {
@@ -67,11 +73,13 @@ type StoredPayload = {
 };
 
 type TradeAction = "BUY" | "SELL" | "NO_TRADE";
-type TradeStatus = "SCANNING" | "FOUND" | "NO_OPPORTUNITY" | "CAPITAL_PROTECTION";
+type TradeStatus = "WAITING" | "ACTIVE_TRADE" | "COOLDOWN" | "FOUND" | "NO_OPPORTUNITY" | "CAPITAL_PROTECTION";
+type SystemState = "WAITING" | "ACTIVE_TRADE" | "COOLDOWN" | "CAPITAL_PROTECTION";
 type SystemMode = "paper" | "live";
 type WhaleIntent = "accumulating" | "distributing" | "neutral";
 
 type SystemPerformance = {
+  id: string;
   totalTrades: number;
   successfulTrades: number;
   failedTrades: number;
@@ -80,6 +88,27 @@ type SystemPerformance = {
   capitalProtectionEnabled: boolean;
   capitalProtectionReason: string | null;
   mode: SystemMode;
+  currentState: SystemState;
+  activeTradeId: string | null;
+  lastTradeClosedAt: string | null;
+  cooldownEndsAt: string | null;
+  lastScanAt: string | null;
+  lastWhaleEventAt: string | null;
+  lastTradeEntryPrice: number | null;
+  lastTradeExitPrice: number | null;
+};
+
+type ActiveTrade = {
+  id: string;
+  coinId: string;
+  coinName: string;
+  coinSymbol: string;
+  action: "BUY" | "SELL";
+  entryPrice: number;
+  targetPrice: number;
+  stopLoss: number;
+  createdAt: string;
+  lastMonitoredAt: string;
 };
 
 type FilterResult = {
@@ -120,8 +149,15 @@ type ConservativeTrade = {
   reasoning: string;
   updatedAt: string;
   nextScanIn: string;
-  // System performance
+  timeUntilNextAction: string;
   systemPerformance: SystemPerformance;
+  activeTrade: ActiveTrade | null;
+  tradeProgress: {
+    currentPnL: number;
+    distanceToTarget: number;
+    distanceToStop: number;
+    timeInTrade: number; // minutes
+  } | null;
 };
 
 // Fetch whale intelligence from the analyze function
@@ -130,9 +166,9 @@ async function fetchWhaleIntelligence(supabaseUrl: string, serviceRoleKey: strin
   confidence: number;
   shouldTrade: boolean;
   volatilityState: string;
+  hasNewEvent: boolean;
 } | null> {
   try {
-    // Generate mock whale transactions for analysis
     const mockTransactions = generateMockWhaleTransactions();
     
     const response = await fetch(`${supabaseUrl}/functions/v1/analyze-whale-intelligence`, {
@@ -151,11 +187,15 @@ async function fetchWhaleIntelligence(supabaseUrl: string, serviceRoleKey: strin
     
     const data = await response.json();
     
+    // Check if there's a "new" whale event (simulated)
+    const hasNewEvent = data.confidenceScore >= 75 && data.whaleIntent?.classification !== 'neutral';
+    
     return {
       intent: data.whaleIntent?.classification || 'neutral',
       confidence: data.confidenceScore || 0,
       shouldTrade: data.actionGuidance?.recommendation === 'trade',
-      volatilityState: data.marketContext?.volatilityState || 'medium'
+      volatilityState: data.marketContext?.volatilityState || 'medium',
+      hasNewEvent
     };
   } catch (error) {
     console.error("Error fetching whale intelligence:", error);
@@ -163,7 +203,6 @@ async function fetchWhaleIntelligence(supabaseUrl: string, serviceRoleKey: strin
   }
 }
 
-// Generate mock whale transactions for analysis
 function generateMockWhaleTransactions() {
   const types = ['exchange_inflow', 'exchange_outflow', 'transfer'] as const;
   const transactions = [];
@@ -200,6 +239,7 @@ async function fetchSystemPerformance(supabase: any): Promise<SystemPerformance>
   if (error || !data) {
     console.log("No system performance record found, using defaults");
     return {
+      id: '',
       totalTrades: 0,
       successfulTrades: 0,
       failedTrades: 0,
@@ -207,11 +247,20 @@ async function fetchSystemPerformance(supabase: any): Promise<SystemPerformance>
       consecutiveLosses: 0,
       capitalProtectionEnabled: false,
       capitalProtectionReason: null,
-      mode: 'paper'
+      mode: 'paper',
+      currentState: 'WAITING',
+      activeTradeId: null,
+      lastTradeClosedAt: null,
+      cooldownEndsAt: null,
+      lastScanAt: null,
+      lastWhaleEventAt: null,
+      lastTradeEntryPrice: null,
+      lastTradeExitPrice: null
     };
   }
   
   return {
+    id: data.id,
     totalTrades: data.total_trades || 0,
     successfulTrades: data.successful_trades || 0,
     failedTrades: data.failed_trades || 0,
@@ -219,86 +268,231 @@ async function fetchSystemPerformance(supabase: any): Promise<SystemPerformance>
     consecutiveLosses: data.consecutive_losses || 0,
     capitalProtectionEnabled: data.capital_protection_enabled || false,
     capitalProtectionReason: data.capital_protection_reason || null,
-    mode: data.mode || 'paper'
+    mode: data.mode || 'paper',
+    currentState: data.current_state || 'WAITING',
+    activeTradeId: data.active_trade_id || null,
+    lastTradeClosedAt: data.last_trade_closed_at || null,
+    cooldownEndsAt: data.cooldown_ends_at || null,
+    lastScanAt: data.last_scan_at || null,
+    lastWhaleEventAt: data.last_whale_event_at || null,
+    lastTradeEntryPrice: data.last_trade_entry_price || null,
+    lastTradeExitPrice: data.last_trade_exit_price || null
   };
 }
 
-// Check if coin passes all filters
+// Fetch active trade
+async function fetchActiveTrade(supabase: any, tradeId: string): Promise<ActiveTrade | null> {
+  const { data, error } = await supabase
+    .from('trade_history')
+    .select('*')
+    .eq('id', tradeId)
+    .eq('result', 'PENDING')
+    .single();
+  
+  if (error || !data) return null;
+  
+  return {
+    id: data.id,
+    coinId: data.coin_id,
+    coinName: data.coin_name,
+    coinSymbol: data.coin_symbol,
+    action: data.action,
+    entryPrice: parseFloat(data.entry_price),
+    targetPrice: parseFloat(data.target_price),
+    stopLoss: parseFloat(data.stop_loss),
+    createdAt: data.created_at,
+    lastMonitoredAt: data.last_monitored_at
+  };
+}
+
+// Update system state
+async function updateSystemState(
+  supabase: any, 
+  performanceId: string, 
+  updates: Partial<{
+    current_state: SystemState;
+    active_trade_id: string | null;
+    last_trade_closed_at: string;
+    cooldown_ends_at: string | null;
+    last_scan_at: string;
+    last_whale_event_at: string;
+    consecutive_losses: number;
+    capital_protection_enabled: boolean;
+    capital_protection_reason: string | null;
+    successful_trades: number;
+    failed_trades: number;
+    total_trades: number;
+    accuracy_percent: number;
+    last_trade_entry_price: number | null;
+    last_trade_exit_price: number | null;
+  }>
+) {
+  if (!performanceId) return;
+  
+  const { error } = await supabase
+    .from('system_performance')
+    .update({ ...updates, last_updated_at: new Date().toISOString() })
+    .eq('id', performanceId);
+  
+  if (error) console.error("Failed to update system state:", error);
+}
+
+// Create new trade in history
+async function createTradeRecord(supabase: any, trade: ConservativeTrade): Promise<string | null> {
+  const { data, error } = await supabase
+    .from('trade_history')
+    .insert({
+      coin_id: trade.coinId,
+      coin_name: trade.coinName,
+      coin_symbol: trade.coinSymbol,
+      action: trade.action,
+      entry_price: trade.entryPrice,
+      target_price: trade.targetPrice,
+      stop_loss: trade.stopLoss,
+      confidence_score: trade.confidenceScore,
+      whale_intent: trade.whaleIntent,
+      reasoning: trade.reasoning,
+      result: 'PENDING',
+      capital_protection_active: false,
+      last_monitored_at: new Date().toISOString()
+    })
+    .select('id')
+    .single();
+  
+  if (error) {
+    console.error("Failed to create trade record:", error);
+    return null;
+  }
+  
+  return data.id;
+}
+
+// Close trade and update performance
+async function closeTrade(
+  supabase: any, 
+  tradeId: string, 
+  result: 'SUCCESS' | 'FAILED',
+  exitPrice: number,
+  entryPrice: number,
+  action: 'BUY' | 'SELL'
+): Promise<void> {
+  const profitLossPercent = action === 'BUY' 
+    ? ((exitPrice - entryPrice) / entryPrice) * 100
+    : ((entryPrice - exitPrice) / entryPrice) * 100;
+  
+  await supabase
+    .from('trade_history')
+    .update({
+      result,
+      exit_price: exitPrice,
+      profit_loss_percent: profitLossPercent,
+      closed_at: new Date().toISOString()
+    })
+    .eq('id', tradeId);
+}
+
+// Check if cooldown conditions are met
+function checkCooldownExit(
+  systemPerformance: SystemPerformance,
+  whaleData: { hasNewEvent: boolean; volatilityState: string } | null,
+  currentPrice: number | null
+): { canExit: boolean; reason: string } {
+  const now = new Date();
+  
+  // Must wait minimum 10 minutes
+  if (systemPerformance.cooldownEndsAt) {
+    const cooldownEnd = new Date(systemPerformance.cooldownEndsAt);
+    if (now < cooldownEnd) {
+      const minutesLeft = Math.ceil((cooldownEnd.getTime() - now.getTime()) / 60000);
+      return { canExit: false, reason: `Minimum cooldown: ${minutesLeft}m remaining` };
+    }
+  }
+  
+  // Check exit conditions (need at least one)
+  const conditions: string[] = [];
+  
+  // Condition 1: New whale event
+  if (whaleData?.hasNewEvent) {
+    conditions.push("New whale activity detected");
+  }
+  
+  // Condition 2: Volatility stabilized
+  if (whaleData?.volatilityState === 'low' || whaleData?.volatilityState === 'medium') {
+    conditions.push("Volatility stabilized");
+  }
+  
+  // Condition 3: Price exited previous trade range
+  if (currentPrice && systemPerformance.lastTradeEntryPrice && systemPerformance.lastTradeExitPrice) {
+    const rangeMin = Math.min(systemPerformance.lastTradeEntryPrice, systemPerformance.lastTradeExitPrice) * 0.99;
+    const rangeMax = Math.max(systemPerformance.lastTradeEntryPrice, systemPerformance.lastTradeExitPrice) * 1.01;
+    if (currentPrice < rangeMin || currentPrice > rangeMax) {
+      conditions.push("Price exited previous trade range");
+    }
+  }
+  
+  if (conditions.length > 0) {
+    return { canExit: true, reason: conditions[0] };
+  }
+  
+  return { canExit: false, reason: "Waiting for: whale event, volatility change, or price movement" };
+}
+
 function applyTradingFilters(
   coin: EnrichedCoin, 
   tightenFilters: boolean
 ): { passed: boolean; results: FilterResult[] } {
   const results: FilterResult[] = [];
   
-  // Adjust thresholds if tightening after losses
   const maxRank = tightenFilters ? 20 : TRADING_CONFIG.MAX_RANK;
   const rsiMin = tightenFilters ? 42 : TRADING_CONFIG.RSI_MIN;
   const rsiMax = tightenFilters ? 58 : TRADING_CONFIG.RSI_MAX;
   const max1hChange = tightenFilters ? 2 : TRADING_CONFIG.MAX_1H_CHANGE;
   const max24hChange = tightenFilters ? 6 : TRADING_CONFIG.MAX_24H_CHANGE;
   
-  // Filter 1: Market cap rank
-  const rankFilter: FilterResult = {
+  results.push({
     passed: coin.marketCapRank <= maxRank,
     reason: `Rank #${coin.marketCapRank} ${coin.marketCapRank <= maxRank ? '✓' : `> ${maxRank}`}`
-  };
-  results.push(rankFilter);
+  });
   
-  // Filter 2: Minimum volume
-  const volumeFilter: FilterResult = {
+  results.push({
     passed: coin.volume24h >= TRADING_CONFIG.MIN_VOLUME_24H,
     reason: `Volume $${(coin.volume24h / 1_000_000).toFixed(0)}M ${coin.volume24h >= TRADING_CONFIG.MIN_VOLUME_24H ? '✓' : '< $50M'}`
-  };
-  results.push(volumeFilter);
+  });
   
-  // Filter 3: RSI in neutral zone
-  const rsiFilter: FilterResult = {
+  results.push({
     passed: coin.rsi14 >= rsiMin && coin.rsi14 <= rsiMax,
     reason: `RSI ${coin.rsi14.toFixed(1)} ${coin.rsi14 >= rsiMin && coin.rsi14 <= rsiMax ? '✓ (neutral)' : `outside ${rsiMin}-${rsiMax}`}`
-  };
-  results.push(rsiFilter);
+  });
   
-  // Filter 4: 1h volatility
-  const volatility1hFilter: FilterResult = {
+  results.push({
     passed: Math.abs(coin.change1h) <= max1hChange,
     reason: `1h volatility ${Math.abs(coin.change1h).toFixed(2)}% ${Math.abs(coin.change1h) <= max1hChange ? '✓' : `> ${max1hChange}%`}`
-  };
-  results.push(volatility1hFilter);
+  });
   
-  // Filter 5: 24h volatility
-  const volatility24hFilter: FilterResult = {
+  results.push({
     passed: Math.abs(coin.change24h) <= max24hChange,
     reason: `24h volatility ${Math.abs(coin.change24h).toFixed(2)}% ${Math.abs(coin.change24h) <= max24hChange ? '✓' : `> ${max24hChange}%`}`
-  };
-  results.push(volatility24hFilter);
+  });
   
-  // Filter 6: Trend alignment
   const trendAligned = (coin.change1h > 0 && coin.change24h > 0) || (coin.change1h < 0 && coin.change24h < 0);
-  const trendFilter: FilterResult = {
+  results.push({
     passed: trendAligned,
     reason: `Trend alignment ${trendAligned ? '✓' : 'mixed signals'}`
-  };
-  results.push(trendFilter);
+  });
   
-  // Filter 7: No impulsive moves
-  const noImpulsiveFilter: FilterResult = {
+  results.push({
     passed: Math.abs(coin.change1h) < 2,
     reason: `No impulsive moves ${Math.abs(coin.change1h) < 2 ? '✓' : '> 2% 1h move'}`
-  };
-  results.push(noImpulsiveFilter);
+  });
   
-  // Filter 8: Volume stability
-  const volumeStableFilter: FilterResult = {
+  results.push({
     passed: coin.volumeToMcap > 0.05,
     reason: `Volume/MCap ${(coin.volumeToMcap * 100).toFixed(2)}% ${coin.volumeToMcap > 0.05 ? '✓' : '< 5%'}`
-  };
-  results.push(volumeStableFilter);
+  });
   
-  const passed = results.every(r => r.passed);
-  return { passed, results };
+  return { passed: results.every(r => r.passed), results };
 }
 
-// Calculate trade setup
 function calculateTradeSetup(coin: EnrichedCoin): {
   action: TradeAction;
   entryPrice: number;
@@ -315,7 +509,6 @@ function calculateTradeSetup(coin: EnrichedCoin): {
   const bullish = coin.change24h > 0 && coin.change7d > 0;
   const bearish = coin.change24h < 0 && coin.change7d < 0;
   
-  // Pullback trade in bullish trend
   if (bullish && coin.change1h < 0 && coin.change1h > -1) {
     const targetPercent = Math.min(
       TRADING_CONFIG.TARGET_PROFIT_MAX,
@@ -335,7 +528,6 @@ function calculateTradeSetup(coin: EnrichedCoin): {
     };
   }
   
-  // Pullback trade in bearish trend
   if (bearish && coin.change1h > 0 && coin.change1h < 1) {
     const targetPercent = Math.min(
       TRADING_CONFIG.TARGET_PROFIT_MAX,
@@ -355,7 +547,6 @@ function calculateTradeSetup(coin: EnrichedCoin): {
     };
   }
   
-  // Range-bound trade
   const priceRange = (coin.high24h - coin.low24h) / price;
   const isRangeBound = priceRange < 0.05 && Math.abs(coin.change24h) < 2;
   
@@ -403,7 +594,6 @@ function calculateTradeSetup(coin: EnrichedCoin): {
   };
 }
 
-// Score opportunity
 function scoreOpportunity(
   coin: EnrichedCoin, 
   setup: ReturnType<typeof calculateTradeSetup>,
@@ -414,64 +604,39 @@ function scoreOpportunity(
   
   let score = 50;
   
-  // Liquidity bonus
   if (coin.marketCapRank <= 5) score += 20;
   else if (coin.marketCapRank <= 10) score += 15;
   else if (coin.marketCapRank <= 20) score += 10;
   
-  // RSI neutral bonus
   const rsiDeviation = Math.abs(coin.rsi14 - 50);
   if (rsiDeviation <= 5) score += 15;
   else if (rsiDeviation <= 10) score += 10;
   
-  // Volatility bonus
   if (Math.abs(coin.change1h) < 0.5) score += 10;
   if (Math.abs(coin.change24h) < 3) score += 10;
   
-  // R:R bonus
   if (setup.riskReward >= 1.5) score += 10;
   else if (setup.riskReward >= 1.2) score += 5;
   
-  // Whale alignment bonus
   if (whaleIntent && whaleConfidence && whaleConfidence >= 70) {
     if ((setup.action === "BUY" && whaleIntent === 'accumulating') ||
         (setup.action === "SELL" && whaleIntent === 'distributing')) {
       score += 15;
     } else if ((setup.action === "BUY" && whaleIntent === 'distributing') ||
                (setup.action === "SELL" && whaleIntent === 'accumulating')) {
-      score -= 20; // Penalize trading against whales
+      score -= 20;
     }
   }
   
   return score;
 }
 
-// Build reasoning
-function buildReasoning(
-  coin: EnrichedCoin, 
-  trade: ConservativeTrade,
-  whaleIntent: WhaleIntent | null
-): string {
-  if (trade.status === "CAPITAL_PROTECTION") {
-    return `Capital Protection Mode active. ${trade.systemPerformance.capitalProtectionReason || 'Waiting for conditions to improve.'} ` +
-      `System will resume trading when market conditions stabilize. Trade LESS, trade SMART.`;
-  }
-  
-  if (trade.action === "NO_TRADE") {
-    return `No qualifying trade found. ${trade.filtersPassed.length}/${trade.filtersApplied.length} filters passed. ` +
-      `System is operating in ${trade.systemPerformance.mode.toUpperCase()} mode. ` +
-      `Capital protection is priority - waiting for perfect setup.`;
-  }
-  
-  const action = trade.action === "BUY" ? "long" : "short";
-  const whaleInfo = whaleIntent && whaleIntent !== 'neutral' 
-    ? ` Whale activity shows ${whaleIntent} pattern.` 
-    : '';
-  
-  return `${coin.name} identified as ${trade.trendAlignment} ${action} opportunity. ` +
-    `Entry: $${trade.entryPrice.toFixed(2)}, Target: +${trade.targetPercent.toFixed(2)}%, Stop: -${trade.riskPercent.toFixed(2)}%. ` +
-    `RSI at ${coin.rsi14.toFixed(1)} (neutral).${whaleInfo} ` +
-    `Confidence: ${trade.confidenceScore}%. Mode: ${trade.systemPerformance.mode.toUpperCase()}.`;
+function formatTimeRemaining(minutes: number): string {
+  if (minutes < 1) return "< 1m";
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  const hours = Math.floor(minutes / 60);
+  const mins = Math.round(minutes % 60);
+  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
 }
 
 serve(async (req) => {
@@ -484,27 +649,26 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get("SUPABASE_ANON_KEY")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseKey);
+    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
 
-    console.log("Professional trading desk scanner starting...");
+    console.log("=== Automated Trading System Starting ===");
 
     // Fetch system performance
     const systemPerformance = await fetchSystemPerformance(supabase);
-    console.log(`System: ${systemPerformance.mode} mode, ${systemPerformance.totalTrades} trades, ${systemPerformance.accuracyPercent?.toFixed(1) || 0}% accuracy`);
+    console.log(`State: ${systemPerformance.currentState} | Mode: ${systemPerformance.mode} | Trades: ${systemPerformance.totalTrades} | Accuracy: ${systemPerformance.accuracyPercent?.toFixed(1) || 0}%`);
     
-    // Check if Capital Protection Mode should be active
+    // Check if Capital Protection should be active
     if (systemPerformance.consecutiveLosses >= TRADING_CONFIG.MAX_CONSECUTIVE_LOSSES) {
       systemPerformance.capitalProtectionEnabled = true;
-      systemPerformance.capitalProtectionReason = `${systemPerformance.consecutiveLosses} consecutive losses detected. Auto-protection enabled.`;
+      systemPerformance.capitalProtectionReason = `${systemPerformance.consecutiveLosses} consecutive losses detected`;
+      systemPerformance.currentState = 'CAPITAL_PROTECTION';
     }
     
     const tightenFilters = systemPerformance.consecutiveLosses >= TRADING_CONFIG.TIGHTEN_AFTER_LOSSES;
-    if (tightenFilters) {
-      console.log("Filters tightened due to recent losses");
-    }
-
+    
     // Fetch whale intelligence
     const whaleData = await fetchWhaleIntelligence(supabaseUrl, serviceRoleKey);
-    console.log(`Whale intel: ${whaleData?.intent || 'unavailable'} (${whaleData?.confidence || 0}% confidence)`);
+    console.log(`Whale: ${whaleData?.intent || 'unavailable'} (${whaleData?.confidence || 0}%) | New event: ${whaleData?.hasNewEvent || false}`);
 
     // Load market data
     const { data, error } = await supabase.storage
@@ -542,8 +706,6 @@ serve(async (req) => {
     }
 
     const eligibleCoins = coins.filter(c => c.marketCapRank <= TRADING_CONFIG.MAX_RANK);
-    console.log(`Scanning ${eligibleCoins.length} coins...`);
-
     const allFiltersApplied = [
       `Top ${tightenFilters ? 20 : 30} rank`,
       "Min $50M volume",
@@ -555,9 +717,23 @@ serve(async (req) => {
       "Volume stability"
     ];
 
-    // If Capital Protection is active, return immediately
-    if (systemPerformance.capitalProtectionEnabled) {
-      console.log("Capital Protection Mode - no trades allowed");
+    // ======== STATE MACHINE ========
+    
+    // STATE: CAPITAL_PROTECTION
+    if (systemPerformance.currentState === 'CAPITAL_PROTECTION' || systemPerformance.capitalProtectionEnabled) {
+      console.log("=== CAPITAL PROTECTION MODE ===");
+      
+      // Check if we should re-evaluate (every hour)
+      const lastScan = systemPerformance.lastScanAt ? new Date(systemPerformance.lastScanAt) : new Date(0);
+      const minutesSinceLastScan = (Date.now() - lastScan.getTime()) / 60000;
+      
+      // Update last scan time
+      await updateSystemState(supabaseAdmin, systemPerformance.id, {
+        last_scan_at: new Date().toISOString(),
+        current_state: 'CAPITAL_PROTECTION'
+      });
+      
+      const nextReevaluate = Math.max(0, TRADING_CONFIG.CAPITAL_PROTECTION_REEVALUATE - minutesSinceLastScan);
       
       const protectedResult: ConservativeTrade = {
         coinId: "",
@@ -589,18 +765,233 @@ serve(async (req) => {
         filtersApplied: allFiltersApplied,
         filtersPassed: [],
         filtersSkipped: ["Capital Protection Mode active"],
-        reasoning: "",
+        reasoning: `Capital Protection Mode active. ${systemPerformance.capitalProtectionReason || 'System paused due to consecutive losses.'} Scanning continues every hour. Trade LESS, trade SMART.`,
         updatedAt: payload.updatedAt,
-        nextScanIn: "1 hour",
-        systemPerformance
+        nextScanIn: formatTimeRemaining(TRADING_CONFIG.CAPITAL_PROTECTION_REEVALUATE),
+        timeUntilNextAction: formatTimeRemaining(nextReevaluate),
+        systemPerformance,
+        activeTrade: null,
+        tradeProgress: null
       };
-      
-      protectedResult.reasoning = buildReasoning({} as EnrichedCoin, protectedResult, null);
       
       return new Response(JSON.stringify(protectedResult), {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
+
+    // STATE: ACTIVE_TRADE - Monitor existing trade
+    if (systemPerformance.currentState === 'ACTIVE_TRADE' && systemPerformance.activeTradeId) {
+      console.log("=== ACTIVE TRADE - MONITORING ===");
+      
+      const activeTrade = await fetchActiveTrade(supabase, systemPerformance.activeTradeId);
+      
+      if (!activeTrade) {
+        // Trade was closed externally, move to cooldown
+        console.log("Active trade not found, entering cooldown");
+        await updateSystemState(supabaseAdmin, systemPerformance.id, {
+          current_state: 'COOLDOWN',
+          active_trade_id: null,
+          last_trade_closed_at: new Date().toISOString(),
+          cooldown_ends_at: new Date(Date.now() + TRADING_CONFIG.COOLDOWN_MIN_MINUTES * 60000).toISOString()
+        });
+        systemPerformance.currentState = 'COOLDOWN';
+      } else {
+        // Find current price for the traded coin
+        const tradedCoin = coins.find(c => c.id === activeTrade.coinId);
+        const currentPrice = tradedCoin?.currentPrice || activeTrade.entryPrice;
+        
+        // Calculate P&L
+        const pnl = activeTrade.action === 'BUY'
+          ? ((currentPrice - activeTrade.entryPrice) / activeTrade.entryPrice) * 100
+          : ((activeTrade.entryPrice - currentPrice) / activeTrade.entryPrice) * 100;
+        
+        const distanceToTarget = activeTrade.action === 'BUY'
+          ? ((activeTrade.targetPrice - currentPrice) / currentPrice) * 100
+          : ((currentPrice - activeTrade.targetPrice) / currentPrice) * 100;
+        
+        const distanceToStop = activeTrade.action === 'BUY'
+          ? ((currentPrice - activeTrade.stopLoss) / currentPrice) * 100
+          : ((activeTrade.stopLoss - currentPrice) / currentPrice) * 100;
+        
+        const timeInTrade = (Date.now() - new Date(activeTrade.createdAt).getTime()) / 60000;
+        
+        // Check if target or stop hit
+        let tradeResult: 'SUCCESS' | 'FAILED' | null = null;
+        
+        if (activeTrade.action === 'BUY') {
+          if (currentPrice >= activeTrade.targetPrice) tradeResult = 'SUCCESS';
+          else if (currentPrice <= activeTrade.stopLoss) tradeResult = 'FAILED';
+        } else {
+          if (currentPrice <= activeTrade.targetPrice) tradeResult = 'SUCCESS';
+          else if (currentPrice >= activeTrade.stopLoss) tradeResult = 'FAILED';
+        }
+        
+        if (tradeResult) {
+          console.log(`Trade ${tradeResult}: ${activeTrade.coinSymbol} at $${currentPrice}`);
+          
+          // Close trade
+          await closeTrade(supabaseAdmin, activeTrade.id, tradeResult, currentPrice, activeTrade.entryPrice, activeTrade.action);
+          
+          // Update performance
+          const newConsecutiveLosses = tradeResult === 'FAILED' ? systemPerformance.consecutiveLosses + 1 : 0;
+          const newSuccessful = tradeResult === 'SUCCESS' ? systemPerformance.successfulTrades + 1 : systemPerformance.successfulTrades;
+          const newFailed = tradeResult === 'FAILED' ? systemPerformance.failedTrades + 1 : systemPerformance.failedTrades;
+          const newTotal = systemPerformance.totalTrades + 1;
+          const newAccuracy = newTotal > 0 ? (newSuccessful / newTotal) * 100 : 0;
+          
+          await updateSystemState(supabaseAdmin, systemPerformance.id, {
+            current_state: 'COOLDOWN',
+            active_trade_id: null,
+            last_trade_closed_at: new Date().toISOString(),
+            cooldown_ends_at: new Date(Date.now() + TRADING_CONFIG.COOLDOWN_MIN_MINUTES * 60000).toISOString(),
+            consecutive_losses: newConsecutiveLosses,
+            successful_trades: newSuccessful,
+            failed_trades: newFailed,
+            total_trades: newTotal,
+            accuracy_percent: newAccuracy,
+            last_trade_entry_price: activeTrade.entryPrice,
+            last_trade_exit_price: currentPrice,
+            capital_protection_enabled: newConsecutiveLosses >= TRADING_CONFIG.MAX_CONSECUTIVE_LOSSES,
+            capital_protection_reason: newConsecutiveLosses >= TRADING_CONFIG.MAX_CONSECUTIVE_LOSSES 
+              ? `${newConsecutiveLosses} consecutive losses` 
+              : null
+          });
+          
+          systemPerformance.currentState = 'COOLDOWN';
+          systemPerformance.consecutiveLosses = newConsecutiveLosses;
+        } else {
+          // Update monitoring timestamp
+          await supabaseAdmin
+            .from('trade_history')
+            .update({ last_monitored_at: new Date().toISOString() })
+            .eq('id', activeTrade.id);
+          
+          // Return active trade status
+          const result: ConservativeTrade = {
+            coinId: activeTrade.coinId,
+            coinName: activeTrade.coinName,
+            coinSymbol: activeTrade.coinSymbol,
+            coinImage: tradedCoin?.image || "",
+            action: activeTrade.action,
+            status: "ACTIVE_TRADE",
+            currentPrice,
+            entryPrice: activeTrade.entryPrice,
+            targetPrice: activeTrade.targetPrice,
+            stopLoss: activeTrade.stopLoss,
+            targetPercent: Math.abs((activeTrade.targetPrice - activeTrade.entryPrice) / activeTrade.entryPrice * 100),
+            riskPercent: Math.abs((activeTrade.entryPrice - activeTrade.stopLoss) / activeTrade.entryPrice * 100),
+            riskReward: Math.abs((activeTrade.targetPrice - activeTrade.entryPrice) / (activeTrade.entryPrice - activeTrade.stopLoss)),
+            successProbability: 0,
+            confidenceScore: 0,
+            whaleIntent: whaleData?.intent || null,
+            whaleConfidence: whaleData?.confidence || null,
+            rsi14: tradedCoin?.rsi14 || 0,
+            atr14: tradedCoin?.atr14 || 0,
+            priceChange1h: tradedCoin?.change1h || 0,
+            priceChange24h: tradedCoin?.change24h || 0,
+            priceChange7d: tradedCoin?.change7d || 0,
+            volume24h: tradedCoin?.volume24h || 0,
+            marketCap: tradedCoin?.marketCap || 0,
+            marketCapRank: tradedCoin?.marketCapRank || 0,
+            trendAlignment: "MONITORING",
+            filtersApplied: [],
+            filtersPassed: [],
+            filtersSkipped: [],
+            reasoning: `Monitoring ${activeTrade.action} ${activeTrade.coinSymbol} | P&L: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}% | Target: ${distanceToTarget.toFixed(2)}% away | Stop: ${distanceToStop.toFixed(2)}% buffer`,
+            updatedAt: payload.updatedAt,
+            nextScanIn: formatTimeRemaining(TRADING_CONFIG.TRADE_MONITOR_INTERVAL),
+            timeUntilNextAction: "Monitoring every 3m",
+            systemPerformance,
+            activeTrade,
+            tradeProgress: {
+              currentPnL: pnl,
+              distanceToTarget,
+              distanceToStop,
+              timeInTrade
+            }
+          };
+          
+          return new Response(JSON.stringify(result), {
+            headers: { ...corsHeaders, "Content-Type": "application/json" }
+          });
+        }
+      }
+    }
+
+    // STATE: COOLDOWN - Check if we can exit
+    if (systemPerformance.currentState === 'COOLDOWN') {
+      console.log("=== COOLDOWN STATE ===");
+      
+      // Get a reference price for cooldown exit check
+      const btcPrice = coins.find(c => c.symbol.toLowerCase() === 'btc')?.currentPrice || null;
+      const cooldownCheck = checkCooldownExit(systemPerformance, whaleData, btcPrice);
+      
+      if (!cooldownCheck.canExit) {
+        // Still in cooldown
+        const cooldownEnd = systemPerformance.cooldownEndsAt ? new Date(systemPerformance.cooldownEndsAt) : new Date();
+        const minutesLeft = Math.max(0, (cooldownEnd.getTime() - Date.now()) / 60000);
+        
+        const result: ConservativeTrade = {
+          coinId: "",
+          coinName: "Cooldown",
+          coinSymbol: "WAIT",
+          coinImage: "",
+          action: "NO_TRADE",
+          status: "COOLDOWN",
+          currentPrice: 0,
+          entryPrice: 0,
+          targetPrice: 0,
+          stopLoss: 0,
+          targetPercent: 0,
+          riskPercent: 0,
+          riskReward: 0,
+          successProbability: 0,
+          confidenceScore: 0,
+          whaleIntent: whaleData?.intent || null,
+          whaleConfidence: whaleData?.confidence || null,
+          rsi14: 0,
+          atr14: 0,
+          priceChange1h: 0,
+          priceChange24h: 0,
+          priceChange7d: 0,
+          volume24h: 0,
+          marketCap: 0,
+          marketCapRank: 0,
+          trendAlignment: "N/A",
+          filtersApplied: allFiltersApplied,
+          filtersPassed: [],
+          filtersSkipped: ["Cooldown active"],
+          reasoning: `Post-trade cooldown active. ${cooldownCheck.reason}. Avoiding duplicated signals and post-event noise.`,
+          updatedAt: payload.updatedAt,
+          nextScanIn: formatTimeRemaining(minutesLeft),
+          timeUntilNextAction: cooldownCheck.reason,
+          systemPerformance,
+          activeTrade: null,
+          tradeProgress: null
+        };
+        
+        return new Response(JSON.stringify(result), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      // Exit cooldown
+      console.log(`Exiting cooldown: ${cooldownCheck.reason}`);
+      await updateSystemState(supabaseAdmin, systemPerformance.id, {
+        current_state: 'WAITING',
+        cooldown_ends_at: null,
+        last_scan_at: new Date().toISOString()
+      });
+      systemPerformance.currentState = 'WAITING';
+    }
+
+    // STATE: WAITING - Scan for new opportunities
+    console.log("=== WAITING STATE - SCANNING ===");
+    
+    // Update last scan time
+    await updateSystemState(supabaseAdmin, systemPerformance.id, {
+      last_scan_at: new Date().toISOString()
+    });
 
     // Check if whale conditions block trading
     if (whaleData && whaleData.volatilityState === 'high') {
@@ -623,7 +1014,6 @@ serve(async (req) => {
       if (setup.action === "NO_TRADE") continue;
       if (setup.riskReward < TRADING_CONFIG.MIN_RISK_REWARD) continue;
       
-      // Check whale alignment
       const whaleAligned = !whaleData || whaleData.intent === 'neutral' ||
         (setup.action === "BUY" && whaleData.intent === 'accumulating') ||
         (setup.action === "SELL" && whaleData.intent === 'distributing');
@@ -643,7 +1033,6 @@ serve(async (req) => {
         const whaleBonus = whaleData && whaleAligned && whaleData.confidence >= 70 ? 5 : 0;
         const confidenceScore = Math.min(90, Math.round(baseProb + whaleBonus));
         
-        // Only qualify if confidence meets threshold
         if (confidenceScore < TRADING_CONFIG.MIN_CONFIDENCE_FOR_TRADE) {
           console.log(`${coin.symbol}: Confidence ${confidenceScore}% < ${TRADING_CONFIG.MIN_CONFIDENCE_FOR_TRADE}% threshold`);
           continue;
@@ -681,8 +1070,11 @@ serve(async (req) => {
           filtersSkipped,
           reasoning: "",
           updatedAt: payload.updatedAt,
-          nextScanIn: "1 hour",
-          systemPerformance
+          nextScanIn: formatTimeRemaining(TRADING_CONFIG.SCAN_INTERVAL),
+          timeUntilNextAction: "Trade signal ready",
+          systemPerformance,
+          activeTrade: null,
+          tradeProgress: null
         };
         
         console.log(`${coin.symbol}: QUALIFIED - ${setup.action} with score ${score}, confidence ${confidenceScore}%`);
@@ -691,7 +1083,7 @@ serve(async (req) => {
 
     // No trade found
     if (!bestTrade) {
-      console.log("No qualifying trade found");
+      console.log("No qualifying trade found - will rescan in 15 minutes");
       
       const noTrade: ConservativeTrade = {
         coinId: "",
@@ -699,7 +1091,7 @@ serve(async (req) => {
         coinSymbol: "WAIT",
         coinImage: "",
         action: "NO_TRADE",
-        status: "NO_OPPORTUNITY",
+        status: "WAITING",
         currentPrice: 0,
         entryPrice: 0,
         targetPrice: 0,
@@ -723,24 +1115,59 @@ serve(async (req) => {
         filtersApplied: allFiltersApplied,
         filtersPassed: [],
         filtersSkipped: ["No coins met all qualification criteria"],
-        reasoning: "",
+        reasoning: `No qualifying trade found. Scanned ${eligibleCoins.length} coins. System will automatically rescan in ${TRADING_CONFIG.SCAN_INTERVAL} minutes. Patience over profit.`,
         updatedAt: payload.updatedAt,
-        nextScanIn: "1 hour",
-        systemPerformance
+        nextScanIn: formatTimeRemaining(TRADING_CONFIG.SCAN_INTERVAL),
+        timeUntilNextAction: `Auto-rescan in ${TRADING_CONFIG.SCAN_INTERVAL}m`,
+        systemPerformance,
+        activeTrade: null,
+        tradeProgress: null
       };
-      
-      noTrade.reasoning = buildReasoning({} as EnrichedCoin, noTrade, whaleData?.intent || null);
       
       return new Response(JSON.stringify(noTrade), {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
 
-    // Build final reasoning
+    // Trade found - create record and update state
     const bestCoin = eligibleCoins.find(c => c.id === bestTrade!.coinId)!;
-    bestTrade.reasoning = buildReasoning(bestCoin, bestTrade, whaleData?.intent || null);
+    const whaleInfo = whaleData?.intent && whaleData.intent !== 'neutral' 
+      ? ` Whale activity: ${whaleData.intent}.` 
+      : '';
+    
+    bestTrade.reasoning = `${bestCoin.name} identified as ${bestTrade.trendAlignment} ${bestTrade.action === 'BUY' ? 'long' : 'short'} opportunity. ` +
+      `Entry: $${bestTrade.entryPrice.toFixed(2)}, Target: +${bestTrade.targetPercent.toFixed(2)}%, Stop: -${bestTrade.riskPercent.toFixed(2)}%. ` +
+      `RSI: ${bestCoin.rsi14.toFixed(1)} (neutral).${whaleInfo} Confidence: ${bestTrade.confidenceScore}%.`;
 
-    console.log(`Best trade: ${bestTrade.action} ${bestTrade.coinName} @ $${bestTrade.entryPrice}`);
+    // Create trade record
+    const tradeId = await createTradeRecord(supabaseAdmin, bestTrade);
+    
+    if (tradeId) {
+      // Update system state to ACTIVE_TRADE
+      await updateSystemState(supabaseAdmin, systemPerformance.id, {
+        current_state: 'ACTIVE_TRADE',
+        active_trade_id: tradeId,
+        last_scan_at: new Date().toISOString()
+      });
+      
+      bestTrade.activeTrade = {
+        id: tradeId,
+        coinId: bestTrade.coinId,
+        coinName: bestTrade.coinName,
+        coinSymbol: bestTrade.coinSymbol,
+        action: bestTrade.action as 'BUY' | 'SELL',
+        entryPrice: bestTrade.entryPrice,
+        targetPrice: bestTrade.targetPrice,
+        stopLoss: bestTrade.stopLoss,
+        createdAt: new Date().toISOString(),
+        lastMonitoredAt: new Date().toISOString()
+      };
+      
+      bestTrade.status = "ACTIVE_TRADE";
+      bestTrade.timeUntilNextAction = `Monitoring every ${TRADING_CONFIG.TRADE_MONITOR_INTERVAL}m`;
+    }
+
+    console.log(`=== TRADE EXECUTED: ${bestTrade.action} ${bestTrade.coinName} @ $${bestTrade.entryPrice} ===`);
 
     return new Response(JSON.stringify(bestTrade), {
       headers: { ...corsHeaders, "Content-Type": "application/json" }
