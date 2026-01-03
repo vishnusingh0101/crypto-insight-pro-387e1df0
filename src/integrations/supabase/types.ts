@@ -125,41 +125,73 @@ export type Database = {
       system_performance: {
         Row: {
           accuracy_percent: number | null
+          active_trade_id: string | null
           capital_protection_enabled: boolean
           capital_protection_reason: string | null
           consecutive_losses: number
+          cooldown_ends_at: string | null
+          current_state: string
           failed_trades: number
           id: string
+          last_scan_at: string | null
+          last_trade_closed_at: string | null
+          last_trade_entry_price: number | null
+          last_trade_exit_price: number | null
           last_updated_at: string
+          last_whale_event_at: string | null
           mode: string
           successful_trades: number
           total_trades: number
         }
         Insert: {
           accuracy_percent?: number | null
+          active_trade_id?: string | null
           capital_protection_enabled?: boolean
           capital_protection_reason?: string | null
           consecutive_losses?: number
+          cooldown_ends_at?: string | null
+          current_state?: string
           failed_trades?: number
           id?: string
+          last_scan_at?: string | null
+          last_trade_closed_at?: string | null
+          last_trade_entry_price?: number | null
+          last_trade_exit_price?: number | null
           last_updated_at?: string
+          last_whale_event_at?: string | null
           mode?: string
           successful_trades?: number
           total_trades?: number
         }
         Update: {
           accuracy_percent?: number | null
+          active_trade_id?: string | null
           capital_protection_enabled?: boolean
           capital_protection_reason?: string | null
           consecutive_losses?: number
+          cooldown_ends_at?: string | null
+          current_state?: string
           failed_trades?: number
           id?: string
+          last_scan_at?: string | null
+          last_trade_closed_at?: string | null
+          last_trade_entry_price?: number | null
+          last_trade_exit_price?: number | null
           last_updated_at?: string
+          last_whale_event_at?: string | null
           mode?: string
           successful_trades?: number
           total_trades?: number
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "system_performance_active_trade_id_fkey"
+            columns: ["active_trade_id"]
+            isOneToOne: false
+            referencedRelation: "trade_history"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       trade_history: {
         Row: {
@@ -174,6 +206,7 @@ export type Database = {
           entry_price: number
           exit_price: number | null
           id: string
+          last_monitored_at: string | null
           profit_loss_percent: number | null
           reasoning: string | null
           result: string | null
@@ -193,6 +226,7 @@ export type Database = {
           entry_price: number
           exit_price?: number | null
           id?: string
+          last_monitored_at?: string | null
           profit_loss_percent?: number | null
           reasoning?: string | null
           result?: string | null
@@ -212,6 +246,7 @@ export type Database = {
           entry_price?: number
           exit_price?: number | null
           id?: string
+          last_monitored_at?: string | null
           profit_loss_percent?: number | null
           reasoning?: string | null
           result?: string | null
