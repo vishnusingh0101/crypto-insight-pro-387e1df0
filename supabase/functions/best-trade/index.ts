@@ -10,7 +10,8 @@ const BUCKET_NAME = "market-cache";
 const FILE_PATH = "daily/full_market.json";
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ELITE AUTOMATED TRADING SYSTEM - Optimized for LIVE execution, not backtesting
+// ELITE SWING TRADING SYSTEM - Probability First, Speed Second
+// Trade less, but trade better. Missing trades is better than bad trades.
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const TRADING_CONFIG = {
@@ -18,40 +19,26 @@ const TRADING_CONFIG = {
   MAX_RANK: 30,
   MIN_VOLUME_24H: 50_000_000, // $50M minimum volume - exclude illiquid assets
   
-  // Multi-factor scoring thresholds
-  MIN_SCORE_NORMAL: 55,      // Minimum score to trade in normal regime
-  MIN_SCORE_CHOPPY: 65,      // Higher threshold in choppy markets
+  // ═══════ SWING TRADING - PROBABILITY SCORING ═══════
+  MIN_PROBABILITY_SCORE: 70,  // Only trade if success probability >= 70%
   
-  // Risk management
-  MAX_RISK_PERCENT: 0.5,
-  TARGET_PROFIT_MIN: 0.3,
-  TARGET_PROFIT_MAX: 0.8,
-  MIN_RISK_REWARD: 1.0,
+  // ═══════ RISK MANAGEMENT - SWING STYLE ═══════
+  MIN_STOP_LOSS: 2.0,        // Minimum 2% stop loss
+  MAX_STOP_LOSS: 5.0,        // Maximum 5% stop loss
+  MIN_RISK_REWARD: 2.5,      // Minimum 2.5R target
+  PREFERRED_MIN_RR: 3.0,     // Prefer 3R-5R targets
+  PREFERRED_MAX_RR: 5.0,     // Targets based on daily structure
   
-  // Hybrid entry - momentum detection
-  STRONG_MOMENTUM_1H: 0.8,   // 1h change > 0.8% = strong momentum
-  STRONG_MOMENTUM_24H: 2,    // 24h change > 2% = strong momentum
-  MOMENTUM_RSI_MIN: 45,
-  MOMENTUM_RSI_MAX: 65,
-  
-  // RSI filters for normal entries
-  RSI_MIN: 40,
-  RSI_MAX: 60,
-  
-  // Volatility filters
-  MAX_1H_CHANGE: 3,
-  MAX_24H_CHANGE: 8,
+  // ═══════ TIME SYSTEM (SWING) ═══════
+  SCAN_INTERVAL: 60,              // Scan every 1 hour
+  TRADE_MONITOR_INTERVAL: 15,     // Monitor active trades every 15 minutes
+  ENTRY_TIMEOUT_HOURS: 24,        // Allow 24 hours for entry (swing timeframe)
+  COOLDOWN_MIN_HOURS: 1,          // Minimum 1 hour after trade closes
+  CAPITAL_PROTECTION_HOURS: 24,   // 24 hours pause after 3 consecutive losses
   
   // Capital protection triggers
   MAX_CONSECUTIVE_LOSSES: 3,
   TIGHTEN_AFTER_LOSSES: 2,
-  
-  // ═══════ TIME SYSTEM (MANDATORY) ═══════
-  SCAN_INTERVAL: 15,              // Scan every 15 minutes
-  TRADE_MONITOR_INTERVAL: 3,      // Monitor active trades every 3 minutes
-  ENTRY_TIMEOUT_MINUTES: 45,      // Cancel if entry not reached in 45 minutes
-  COOLDOWN_MIN_MINUTES: 10,       // Minimum 10 minutes after trade closes
-  CAPITAL_PROTECTION_REEVALUATE: 60, // Re-evaluate protection every 1 hour
 };
 
 // ═══════ TYPE DEFINITIONS ═══════
@@ -130,6 +117,22 @@ type ActiveTrade = {
   lastMonitoredAt: string;
 };
 
+type ScoredOpportunity = {
+  coin: EnrichedCoin;
+  action: TradeAction;
+  probabilityScore: number;
+  expectedTimeToTarget: number; // in hours
+  entryPrice: number;
+  targetPrice: number;
+  stopLoss: number;
+  targetPercent: number;
+  riskPercent: number;
+  riskReward: number;
+  trendDirection: string;
+  reasonsForSelection: string[];
+  filtersPassedList: string[];
+};
+
 type TradeResult = {
   coinId: string;
   coinName: string;
@@ -144,7 +147,8 @@ type TradeResult = {
   targetPercent: number;
   riskPercent: number;
   riskReward: number;
-  score: number;
+  probabilityScore: number;
+  expectedTimeToTarget: string;
   confidenceScore: number;
   entryType: "IMMEDIATE" | "LIMIT";
   marketRegime: MarketRegime;
@@ -174,7 +178,7 @@ type TradeResult = {
     distanceToStop: number;
     timeInTrade: number;
     entryFilled: boolean;
-    minutesUntilTimeout: number;
+    hoursUntilTimeout: number;
   } | null;
 };
 
@@ -189,8 +193,6 @@ function detectMarketRegime(coins: EnrichedCoin[]): MarketRegime {
   const eth7d = eth.change7d;
   const btc24h = btc.change24h;
   const eth24h = eth.change24h;
-  const btc1h = btc.change1h;
-  const eth1h = eth.change1h;
   
   // TREND_UP: Both BTC and ETH trending up across timeframes
   if (btc7d > 2 && eth7d > 2 && btc24h > 0 && eth24h > 0) {
@@ -198,7 +200,7 @@ function detectMarketRegime(coins: EnrichedCoin[]): MarketRegime {
   }
   
   // DIP_UP: Weekly trend up but short-term pullback (buying opportunity)
-  if (btc7d > 2 && eth7d > 2 && (btc24h < -1 || btc1h < -0.5)) {
+  if (btc7d > 2 && eth7d > 2 && (btc24h < -1 || btc.change1h < -0.5)) {
     return "DIP_UP";
   }
   
@@ -209,16 +211,6 @@ function detectMarketRegime(coins: EnrichedCoin[]): MarketRegime {
   
   // CHOPPY: Mixed signals, no clear direction
   return "CHOPPY";
-}
-
-// ═══════ HYBRID ENTRY LOGIC ═══════
-function detectStrongMomentum(coin: EnrichedCoin): boolean {
-  const has1hMomentum = Math.abs(coin.change1h) > TRADING_CONFIG.STRONG_MOMENTUM_1H;
-  const has24hMomentum = Math.abs(coin.change24h) > TRADING_CONFIG.STRONG_MOMENTUM_24H;
-  const rsiInRange = coin.rsi14 >= TRADING_CONFIG.MOMENTUM_RSI_MIN && 
-                     coin.rsi14 <= TRADING_CONFIG.MOMENTUM_RSI_MAX;
-  
-  return has1hMomentum && has24hMomentum && rsiInRange;
 }
 
 // ═══════ WHALE INTELLIGENCE ═══════
@@ -373,7 +365,6 @@ async function updateSystemState(
   updates: Record<string, any>
 ) {
   if (!performanceId) {
-    // Create new record if none exists
     const { data, error } = await supabase
       .from('system_performance')
       .insert({ 
@@ -408,7 +399,7 @@ async function createTradeRecord(supabase: any, trade: TradeResult): Promise<str
       stop_loss: trade.stopLoss,
       confidence_score: trade.confidenceScore,
       whale_intent: trade.whaleIntent,
-      reasoning: `${trade.entryType} entry | ${trade.reasoning}`,
+      reasoning: `${trade.entryType} entry | Prob: ${trade.probabilityScore}% | ETA: ${trade.expectedTimeToTarget} | ${trade.reasoning}`,
       result: 'PENDING',
       capital_protection_active: false,
       last_monitored_at: new Date().toISOString()
@@ -448,42 +439,38 @@ async function closeTrade(
     .eq('id', tradeId);
 }
 
-// ═══════ COOLDOWN LOGIC (DATA-BASED, NOT EMOTIONAL) ═══════
+// ═══════ COOLDOWN LOGIC ═══════
 function checkCooldownExit(
   systemPerformance: SystemPerformance,
-  whaleData: { hasNewEvent: boolean; volatilityState: string } | null,
-  currentPrice: number | null
+  whaleData: { hasNewEvent: boolean; volatilityState: string } | null
 ): { canExit: boolean; reason: string } {
   const now = new Date();
   
-  // Must wait minimum 10 minutes
+  // Must wait minimum cooldown hours
   if (systemPerformance.cooldownEndsAt) {
     const cooldownEnd = new Date(systemPerformance.cooldownEndsAt);
     if (now < cooldownEnd) {
-      const minutesLeft = Math.ceil((cooldownEnd.getTime() - now.getTime()) / 60000);
-      return { canExit: false, reason: `Minimum cooldown: ${minutesLeft}m remaining` };
+      const hoursLeft = Math.ceil((cooldownEnd.getTime() - now.getTime()) / 3600000);
+      return { canExit: false, reason: `Minimum cooldown: ${hoursLeft}h remaining` };
     }
   }
   
-  // Check exit conditions (need at least one)
+  // Check exit conditions
   const conditions: string[] = [];
   
-  // Condition 1: New whale transaction appears
   if (whaleData?.hasNewEvent) {
     conditions.push("New whale transaction detected");
   }
   
-  // Condition 2: Volatility normalizes
   if (whaleData?.volatilityState === 'low' || whaleData?.volatilityState === 'medium') {
     conditions.push("Volatility normalized");
   }
   
-  // Condition 3: Price exits previous trade range
-  if (currentPrice && systemPerformance.lastTradeEntryPrice && systemPerformance.lastTradeExitPrice) {
-    const rangeMin = Math.min(systemPerformance.lastTradeEntryPrice, systemPerformance.lastTradeExitPrice) * 0.99;
-    const rangeMax = Math.max(systemPerformance.lastTradeEntryPrice, systemPerformance.lastTradeExitPrice) * 1.01;
-    if (currentPrice < rangeMin || currentPrice > rangeMax) {
-      conditions.push("Price exited previous trade range");
+  // In swing trading, we can exit cooldown after minimum time if conditions are good
+  if (systemPerformance.lastTradeClosedAt) {
+    const hoursSinceClose = (Date.now() - new Date(systemPerformance.lastTradeClosedAt).getTime()) / 3600000;
+    if (hoursSinceClose >= TRADING_CONFIG.COOLDOWN_MIN_HOURS) {
+      conditions.push("Minimum cooldown passed");
     }
   }
   
@@ -491,87 +478,173 @@ function checkCooldownExit(
     return { canExit: true, reason: conditions[0] };
   }
   
-  return { canExit: false, reason: "Waiting for: new whale event, volatility normalization, or price exit from previous range" };
+  return { canExit: false, reason: "Waiting for cooldown to end or market conditions to improve" };
 }
 
-// ═══════ MULTI-FACTOR SCORING MODEL ═══════
-function scoreOpportunity(
-  coin: EnrichedCoin, 
+// ═══════ STAGE 1: SETUP FILTERING ═══════
+function passesSetupFiltering(coin: EnrichedCoin, regime: MarketRegime): { passes: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  const failures: string[] = [];
+  
+  // 1. Trend alignment with 4H/1D (approximated by 24h and 7d trends)
+  const trend24h = coin.change24h;
+  const trend7d = coin.change7d;
+  const trend30d = coin.change30d;
+  
+  const bullishTrend = trend24h > -1 && trend7d > 0 && (trend30d === undefined || trend30d > -5);
+  const bearishTrend = trend24h < 1 && trend7d < 0 && (trend30d === undefined || trend30d < 5);
+  
+  if (regime === 'TREND_UP' || regime === 'DIP_UP') {
+    if (bullishTrend) {
+      reasons.push(`Aligned with uptrend (7d: +${trend7d.toFixed(1)}%)`);
+    } else {
+      failures.push(`Not aligned with 4H/1D trend (7d: ${trend7d.toFixed(1)}%)`);
+    }
+  } else if (regime === 'TREND_DOWN') {
+    if (bearishTrend) {
+      reasons.push(`Aligned with downtrend (7d: ${trend7d.toFixed(1)}%)`);
+    } else {
+      failures.push(`Not aligned with downtrend`);
+    }
+  } else {
+    // CHOPPY - only accept very clean setups
+    if (Math.abs(trend7d) < 3) {
+      failures.push(`Choppy market - unclear trend direction`);
+    } else {
+      reasons.push(`Clear direction despite choppy regime`);
+    }
+  }
+  
+  // 2. Clean market structure (RSI not extreme)
+  if (coin.rsi14 >= 35 && coin.rsi14 <= 65) {
+    reasons.push(`Clean RSI structure (${coin.rsi14.toFixed(1)})`);
+  } else {
+    failures.push(`RSI at extreme levels (${coin.rsi14.toFixed(1)})`);
+  }
+  
+  // 3. No major resistance overhead (approximated by ATH distance)
+  // For swing trades, we check if price isn't at recent highs with low momentum
+  const volatilityCheck = Math.abs(coin.change1h) < 2 && Math.abs(coin.change24h) < 8;
+  if (volatilityCheck) {
+    reasons.push("Stable volatility - no news spike");
+  } else {
+    failures.push(`Volatile conditions (1h: ${coin.change1h.toFixed(1)}%, 24h: ${coin.change24h.toFixed(1)}%)`);
+  }
+  
+  // 4. Volume confirmation
+  if (coin.volumeToMcap > 0.04) {
+    reasons.push(`Strong volume confirmation (${(coin.volumeToMcap * 100).toFixed(1)}% vol/mcap)`);
+  } else if (coin.volumeToMcap > 0.025) {
+    reasons.push("Adequate volume");
+  } else {
+    failures.push(`Low volume (${(coin.volumeToMcap * 100).toFixed(2)}% vol/mcap)`);
+  }
+  
+  // 5. Liquidity check
+  if (coin.volume24h >= TRADING_CONFIG.MIN_VOLUME_24H) {
+    reasons.push(`Liquid ($${(coin.volume24h / 1_000_000).toFixed(0)}M vol)`);
+  } else {
+    failures.push(`Illiquid ($${(coin.volume24h / 1_000_000).toFixed(0)}M vol)`);
+  }
+  
+  // Must pass all filters
+  const passes = failures.length === 0;
+  
+  return { passes, reasons: passes ? reasons : failures };
+}
+
+// ═══════ STAGE 2: SUCCESS PROBABILITY SCORING ═══════
+function calculateProbabilityScore(
+  coin: EnrichedCoin,
   regime: MarketRegime,
-  setup: { action: TradeAction; riskReward: number },
+  action: TradeAction,
   whaleIntent: WhaleIntent | null,
   whaleConfidence: number | null
 ): number {
-  if (setup.action === "NO_TRADE") return 0;
+  if (action === "NO_TRADE") return 0;
   
-  let score = 30;
+  let score = 40; // Base score
   
-  // 1. Liquidity score (market cap rank)
-  if (coin.marketCapRank <= 5) score += 15;
-  else if (coin.marketCapRank <= 10) score += 12;
-  else if (coin.marketCapRank <= 20) score += 8;
-  else score += 4;
+  // 1. Trend strength and consistency (+25 max)
+  const trend7d = coin.change7d;
+  const trend24h = coin.change24h;
+  const trend30d = coin.change30d || 0;
   
-  // 2. Volume-to-market-cap ratio
-  if (coin.volumeToMcap > 0.1) score += 10;
-  else if (coin.volumeToMcap > 0.05) score += 6;
-  
-  // 3. RSI position (neutral is better)
-  const rsiDeviation = Math.abs(coin.rsi14 - 50);
-  if (rsiDeviation <= 5) score += 12;
-  else if (rsiDeviation <= 10) score += 8;
-  else if (rsiDeviation <= 15) score += 4;
-  
-  // 4. ATR volatility (moderate is better)
-  if (coin.atr14 >= 1 && coin.atr14 <= 4) score += 8;
-  else if (coin.atr14 >= 0.5 && coin.atr14 <= 6) score += 4;
-  
-  // 5. Multi-timeframe trend alignment
-  const trend7d = coin.change7d > 0;
-  const trend24h = coin.change24h > 0;
-  const trend1h = coin.change1h > 0;
-  
-  if (setup.action === "BUY") {
-    if (trend7d && trend24h) score += 10;
-    else if (trend7d) score += 5;
-  } else if (setup.action === "SELL") {
-    if (!trend7d && !trend24h) score += 10;
-    else if (!trend7d) score += 5;
+  if (action === "BUY") {
+    if (trend7d > 5 && trend24h > 0) score += 20;
+    else if (trend7d > 2 && trend24h > -1) score += 15;
+    else if (trend7d > 0) score += 8;
+    
+    if (trend30d > 5) score += 5;
+  } else {
+    if (trend7d < -5 && trend24h < 0) score += 20;
+    else if (trend7d < -2 && trend24h < 1) score += 15;
+    else if (trend7d < 0) score += 8;
+    
+    if (trend30d < -5) score += 5;
   }
   
-  // 6. Volatility stability
-  if (Math.abs(coin.change1h) < 1) score += 6;
-  if (Math.abs(coin.change24h) < 4) score += 4;
+  // 2. Structure quality - RSI position (+15 max)
+  const rsiDeviation = Math.abs(coin.rsi14 - 50);
+  if (rsiDeviation <= 8) score += 15;
+  else if (rsiDeviation <= 15) score += 10;
+  else if (rsiDeviation <= 20) score += 5;
   
-  // 7. Risk-reward quality
-  if (setup.riskReward >= 1.5) score += 10;
-  else if (setup.riskReward >= 1.2) score += 6;
+  // 3. Volume and whale alignment (+20 max)
+  if (coin.volumeToMcap > 0.08) score += 10;
+  else if (coin.volumeToMcap > 0.05) score += 7;
+  else if (coin.volumeToMcap > 0.03) score += 4;
   
-  // 8. Whale alignment bonus/penalty
   if (whaleIntent && whaleConfidence && whaleConfidence >= 70) {
-    if ((setup.action === "BUY" && whaleIntent === 'accumulating') ||
-        (setup.action === "SELL" && whaleIntent === 'distributing')) {
-      score += 12;
-    } else if ((setup.action === "BUY" && whaleIntent === 'distributing') ||
-               (setup.action === "SELL" && whaleIntent === 'accumulating')) {
+    if ((action === "BUY" && whaleIntent === 'accumulating') ||
+        (action === "SELL" && whaleIntent === 'distributing')) {
+      score += 10;
+    } else if ((action === "BUY" && whaleIntent === 'distributing') ||
+               (action === "SELL" && whaleIntent === 'accumulating')) {
       score -= 15;
     }
   }
   
-  // 9. Market regime alignment
-  if (regime === "TREND_UP" && setup.action === "BUY") score += 8;
-  if (regime === "DIP_UP" && setup.action === "BUY") score += 12; // Best for buying
-  if (regime === "TREND_DOWN" && setup.action === "SELL") score += 8;
-  if (regime === "CHOPPY") score -= 5; // Penalty for choppy markets
+  // 4. Risk clarity - ATR stability (+10 max)
+  if (coin.atr14 >= 1.5 && coin.atr14 <= 4) score += 10;
+  else if (coin.atr14 >= 1 && coin.atr14 <= 6) score += 5;
+  
+  // 5. Market regime alignment (+10 max)
+  if (regime === "TREND_UP" && action === "BUY") score += 10;
+  else if (regime === "DIP_UP" && action === "BUY") score += 10;
+  else if (regime === "TREND_DOWN" && action === "SELL") score += 10;
+  else if (regime === "CHOPPY") score -= 10;
   
   return Math.max(0, Math.min(100, score));
 }
 
-// ═══════ TRADE SETUP CALCULATION ═══════
-function calculateTradeSetup(
+// ═══════ STAGE 3: SPEED OPTIMIZATION - Expected Time to Target ═══════
+function calculateExpectedTimeToTarget(coin: EnrichedCoin, targetPercent: number): number {
+  // Calculate based on ATR expansion, recent impulse speed, and distance to target
+  
+  // Average daily range from ATR
+  const dailyRangePercent = coin.atr14 || 2;
+  
+  // Recent impulse speed (24h and 7d movement)
+  const recentSpeedDaily = Math.abs(coin.change24h);
+  const avgSpeedDaily = Math.abs(coin.change7d) / 7;
+  
+  // Weighted average speed
+  const weightedSpeed = (recentSpeedDaily * 0.6) + (avgSpeedDaily * 0.4);
+  const effectiveSpeed = Math.max(weightedSpeed, dailyRangePercent * 0.3);
+  
+  // Estimate hours to target
+  const daysToTarget = targetPercent / effectiveSpeed;
+  const hoursToTarget = daysToTarget * 24;
+  
+  // Clamp between 4 hours and 7 days
+  return Math.max(4, Math.min(168, hoursToTarget));
+}
+
+// ═══════ TRADE SETUP CALCULATION - SWING STYLE ═══════
+function calculateSwingTradeSetup(
   coin: EnrichedCoin,
-  regime: MarketRegime,
-  hasStrongMomentum: boolean
+  regime: MarketRegime
 ): {
   action: TradeAction;
   entryPrice: number;
@@ -582,7 +655,7 @@ function calculateTradeSetup(
   riskReward: number;
   trendDirection: string;
   entryType: "IMMEDIATE" | "LIMIT";
-} {
+} | null {
   const price = coin.currentPrice;
   const atr = coin.atr14;
   
@@ -590,81 +663,88 @@ function calculateTradeSetup(
   let action: TradeAction = "NO_TRADE";
   let trendDirection = "UNCLEAR";
   
-  const bullish = coin.change24h > 0 && coin.change7d > 0;
-  const bearish = coin.change24h < 0 && coin.change7d < 0;
+  const bullish = coin.change24h > -1 && coin.change7d > 0;
+  const bearish = coin.change24h < 1 && coin.change7d < 0;
   
-  // Decide BUY or SELL based on market regime + coin trend + RSI
   if (regime === "TREND_UP" || regime === "DIP_UP") {
-    if (bullish || (coin.change7d > 0 && coin.rsi14 < 55)) {
+    if (bullish) {
       action = "BUY";
-      trendDirection = regime === "DIP_UP" ? "DIP BUYING OPPORTUNITY" : "UPTREND CONTINUATION";
+      trendDirection = regime === "DIP_UP" ? "SWING BUY - DIP IN UPTREND" : "SWING BUY - TREND CONTINUATION";
     }
   } else if (regime === "TREND_DOWN") {
-    if (bearish || (coin.change7d < 0 && coin.rsi14 > 45)) {
+    if (bearish) {
       action = "SELL";
-      trendDirection = "DOWNTREND SHORT";
+      trendDirection = "SWING SELL - DOWNTREND";
     }
   } else if (regime === "CHOPPY") {
-    // Only high-conviction trades in choppy markets
-    if (bullish && coin.rsi14 < 50 && coin.change1h < 0 && coin.change1h > -1) {
+    // Only very clear setups in choppy markets
+    if (bullish && coin.rsi14 < 50 && coin.change7d > 3) {
       action = "BUY";
-      trendDirection = "RANGE BUY (pullback in bullish structure)";
-    } else if (bearish && coin.rsi14 > 50 && coin.change1h > 0 && coin.change1h < 1) {
+      trendDirection = "SWING BUY - OVERSOLD BOUNCE";
+    } else if (bearish && coin.rsi14 > 50 && coin.change7d < -3) {
       action = "SELL";
-      trendDirection = "RANGE SELL (bounce in bearish structure)";
+      trendDirection = "SWING SELL - OVERBOUGHT FADE";
     }
   }
   
   if (action === "NO_TRADE") {
-    return {
-      action: "NO_TRADE",
-      entryPrice: price,
-      targetPrice: price,
-      stopLoss: price,
-      targetPercent: 0,
-      riskPercent: 0,
-      riskReward: 0,
-      trendDirection: "NO VALID SETUP",
-      entryType: "LIMIT"
-    };
+    return null;
   }
   
-  // ═══════ HYBRID ENTRY LOGIC ═══════
-  // If STRONG MOMENTUM: Enter immediately at market price
-  // Else: Use pullback entry (ATR-based limit)
+  // ═══════ SWING ENTRY LOGIC ═══════
+  // For swing trades, we prefer shallow retracements or market entry
+  // Do NOT wait for deep pullbacks
   
+  const shallowPullback = atr * 0.15; // 15% of ATR for shallow entry
   let entryPrice: number;
   let entryType: "IMMEDIATE" | "LIMIT";
   
-  if (hasStrongMomentum) {
-    // Strong momentum - enter immediately at current price
+  // Check if we're at a good entry point (near support/resistance)
+  const nearGoodEntry = Math.abs(coin.change1h) < 0.5 && 
+                        Math.abs(coin.change24h - coin.change7d / 7) < 2;
+  
+  if (nearGoodEntry) {
     entryPrice = price;
     entryType = "IMMEDIATE";
   } else {
-    // Use pullback entry
-    const pullbackAmount = atr * 0.2; // 20% of ATR pullback
     entryPrice = action === "BUY" 
-      ? price * (1 - pullbackAmount / 100)
-      : price * (1 + pullbackAmount / 100);
+      ? price * (1 - shallowPullback / 100)
+      : price * (1 + shallowPullback / 100);
     entryType = "LIMIT";
   }
   
-  // Calculate targets based on ATR
-  const targetPercent = Math.min(
-    TRADING_CONFIG.TARGET_PROFIT_MAX,
-    Math.max(TRADING_CONFIG.TARGET_PROFIT_MIN, atr * 0.25)
+  // ═══════ SWING STOP LOSS (2-5%) ═══════
+  // Place stop below higher-timeframe structure
+  const riskPercent = Math.max(
+    TRADING_CONFIG.MIN_STOP_LOSS,
+    Math.min(TRADING_CONFIG.MAX_STOP_LOSS, atr * 0.8)
   );
-  const riskPercent = targetPercent * 0.7; // Aim for 1.4+ R:R
-  
-  const targetPrice = action === "BUY"
-    ? entryPrice * (1 + targetPercent / 100)
-    : entryPrice * (1 - targetPercent / 100);
   
   const stopLoss = action === "BUY"
     ? entryPrice * (1 - riskPercent / 100)
     : entryPrice * (1 + riskPercent / 100);
   
+  // ═══════ SWING TAKE PROFIT (2.5R - 5R) ═══════
+  // Targets based on daily structure or range expansion
+  const minTargetPercent = riskPercent * TRADING_CONFIG.MIN_RISK_REWARD;
+  const preferredTargetPercent = riskPercent * TRADING_CONFIG.PREFERRED_MIN_RR;
+  
+  // Use the larger of minimum and ATR-based target
+  const targetPercent = Math.min(
+    riskPercent * TRADING_CONFIG.PREFERRED_MAX_RR,
+    Math.max(minTargetPercent, preferredTargetPercent, atr * 1.5)
+  );
+  
+  const targetPrice = action === "BUY"
+    ? entryPrice * (1 + targetPercent / 100)
+    : entryPrice * (1 - targetPercent / 100);
+  
   const riskReward = targetPercent / riskPercent;
+  
+  // Validate minimum R:R
+  if (riskReward < TRADING_CONFIG.MIN_RISK_REWARD) {
+    return null;
+  }
   
   return {
     action,
@@ -679,62 +759,19 @@ function calculateTradeSetup(
   };
 }
 
-// ═══════ FILTER APPLICATION ═══════
-function applyTradingFilters(
-  coin: EnrichedCoin, 
-  tightenFilters: boolean
-): { passed: boolean; results: { passed: boolean; reason: string }[] } {
-  const results: { passed: boolean; reason: string }[] = [];
-  
-  const maxRank = tightenFilters ? 20 : TRADING_CONFIG.MAX_RANK;
-  const rsiMin = tightenFilters ? 42 : TRADING_CONFIG.RSI_MIN;
-  const rsiMax = tightenFilters ? 58 : TRADING_CONFIG.RSI_MAX;
-  const max1hChange = tightenFilters ? 2 : TRADING_CONFIG.MAX_1H_CHANGE;
-  const max24hChange = tightenFilters ? 6 : TRADING_CONFIG.MAX_24H_CHANGE;
-  
-  results.push({
-    passed: coin.marketCapRank <= maxRank,
-    reason: `Rank #${coin.marketCapRank} ${coin.marketCapRank <= maxRank ? '✓' : `> ${maxRank}`}`
-  });
-  
-  results.push({
-    passed: coin.volume24h >= TRADING_CONFIG.MIN_VOLUME_24H,
-    reason: `Volume $${(coin.volume24h / 1_000_000).toFixed(0)}M ${coin.volume24h >= TRADING_CONFIG.MIN_VOLUME_24H ? '✓' : '< $50M (illiquid)'}`
-  });
-  
-  results.push({
-    passed: coin.rsi14 >= rsiMin && coin.rsi14 <= rsiMax,
-    reason: `RSI ${coin.rsi14.toFixed(1)} ${coin.rsi14 >= rsiMin && coin.rsi14 <= rsiMax ? '✓ (neutral)' : `outside ${rsiMin}-${rsiMax}`}`
-  });
-  
-  results.push({
-    passed: Math.abs(coin.change1h) <= max1hChange,
-    reason: `1h volatility ${Math.abs(coin.change1h).toFixed(2)}% ${Math.abs(coin.change1h) <= max1hChange ? '✓' : `> ${max1hChange}%`}`
-  });
-  
-  results.push({
-    passed: Math.abs(coin.change24h) <= max24hChange,
-    reason: `24h volatility ${Math.abs(coin.change24h).toFixed(2)}% ${Math.abs(coin.change24h) <= max24hChange ? '✓' : `> ${max24hChange}%`}`
-  });
-  
-  results.push({
-    passed: coin.volumeToMcap > 0.03,
-    reason: `Volume/MCap ${(coin.volumeToMcap * 100).toFixed(2)}% ${coin.volumeToMcap > 0.03 ? '✓' : '< 3%'}`
-  });
-  
-  return { passed: results.every(r => r.passed), results };
-}
-
-function formatTimeRemaining(minutes: number): string {
-  if (minutes < 1) return "< 1m";
-  if (minutes < 60) return `${Math.round(minutes)}m`;
-  const hours = Math.floor(minutes / 60);
-  const mins = Math.round(minutes % 60);
-  return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+function formatTimeRemaining(hours: number): string {
+  if (hours < 1) {
+    const minutes = Math.round(hours * 60);
+    return `${minutes}m`;
+  }
+  if (hours < 24) return `${Math.round(hours)}h`;
+  const days = Math.floor(hours / 24);
+  const remainingHours = Math.round(hours % 24);
+  return remainingHours > 0 ? `${days}d ${remainingHours}h` : `${days}d`;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MAIN HANDLER - Elite Trading System State Machine
+// MAIN HANDLER - Elite Swing Trading System
 // ═══════════════════════════════════════════════════════════════════════════════
 
 serve(async (req) => {
@@ -750,7 +787,7 @@ serve(async (req) => {
     const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
 
     console.log("═══════════════════════════════════════════════════════");
-    console.log("    ELITE AUTOMATED TRADING SYSTEM - LIVE EXECUTION");
+    console.log("    ELITE SWING TRADING SYSTEM - PROBABILITY FIRST");
     console.log("═══════════════════════════════════════════════════════");
 
     // Fetch system performance
@@ -770,18 +807,16 @@ serve(async (req) => {
     
     console.log(`State: ${systemPerformance.currentState} | Mode: ${systemPerformance.mode} | Trades: ${systemPerformance.totalTrades} | Win Rate: ${systemPerformance.accuracyPercent?.toFixed(1) || 0}%`);
     
-    // Check for Capital Protection
+    // Check for Capital Protection (24 hour pause)
     if (systemPerformance.consecutiveLosses >= TRADING_CONFIG.MAX_CONSECUTIVE_LOSSES) {
       systemPerformance.capitalProtectionEnabled = true;
-      systemPerformance.capitalProtectionReason = `${systemPerformance.consecutiveLosses} consecutive losses`;
+      systemPerformance.capitalProtectionReason = `${systemPerformance.consecutiveLosses} consecutive losses - 24h pause`;
       systemPerformance.currentState = 'CAPITAL_PROTECTION';
     }
     
-    const tightenFilters = systemPerformance.consecutiveLosses >= TRADING_CONFIG.TIGHTEN_AFTER_LOSSES;
-    
     // Fetch whale intelligence
     const whaleData = await fetchWhaleIntelligence(supabaseUrl, serviceRoleKey);
-    console.log(`Whale: ${whaleData?.intent || 'unavailable'} (${whaleData?.confidence || 0}%) | New event: ${whaleData?.hasNewEvent || false}`);
+    console.log(`Whale: ${whaleData?.intent || 'unavailable'} (${whaleData?.confidence || 0}%)`);
 
     // Load market data
     const { data, error } = await supabase.storage
@@ -824,25 +859,21 @@ serve(async (req) => {
     
     const eligibleCoins = coins.filter(c => c.marketCapRank <= TRADING_CONFIG.MAX_RANK);
     const allFiltersApplied = [
-      `Top ${tightenFilters ? 20 : 30} rank`,
-      "Min $50M volume",
-      `RSI ${tightenFilters ? '42-58' : '40-60'}`,
-      `1h volatility < ${tightenFilters ? 2 : 3}%`,
-      `24h volatility < ${tightenFilters ? 6 : 8}%`,
-      "Volume/MCap > 3%"
+      "4H/1D trend alignment",
+      "Clean market structure",
+      "No major resistance overhead",
+      "Volume confirmation",
+      "Stable volatility",
+      "Top 30 rank"
     ];
 
-    const minScore = marketRegime === "CHOPPY" 
-      ? TRADING_CONFIG.MIN_SCORE_CHOPPY 
-      : TRADING_CONFIG.MIN_SCORE_NORMAL;
-
     // ═══════════════════════════════════════════════════════════════════════════════
-    // STATE MACHINE
+    // STATE MACHINE - SWING TRADING
     // ═══════════════════════════════════════════════════════════════════════════════
     
-    // ═══════ STATE: CAPITAL_PROTECTION ═══════
+    // ═══════ STATE: CAPITAL_PROTECTION (24 hour pause) ═══════
     if (systemPerformance.currentState === 'CAPITAL_PROTECTION' || systemPerformance.capitalProtectionEnabled) {
-      console.log("═══ CAPITAL PROTECTION MODE ═══");
+      console.log("═══ CAPITAL PROTECTION MODE - 24H PAUSE ═══");
       
       await updateSystemState(supabaseAdmin, systemPerformance.id, {
         last_scan_at: new Date().toISOString(),
@@ -850,8 +881,8 @@ serve(async (req) => {
       });
       
       const lastScan = systemPerformance.lastScanAt ? new Date(systemPerformance.lastScanAt) : new Date(0);
-      const minutesSinceLastScan = (Date.now() - lastScan.getTime()) / 60000;
-      const nextReevaluate = Math.max(0, TRADING_CONFIG.CAPITAL_PROTECTION_REEVALUATE - minutesSinceLastScan);
+      const hoursSinceLastScan = (Date.now() - lastScan.getTime()) / 3600000;
+      const nextReevaluate = Math.max(0, TRADING_CONFIG.CAPITAL_PROTECTION_HOURS - hoursSinceLastScan);
       
       const result: TradeResult = {
         coinId: "",
@@ -867,7 +898,8 @@ serve(async (req) => {
         targetPercent: 0,
         riskPercent: 0,
         riskReward: 0,
-        score: 0,
+        probabilityScore: 0,
+        expectedTimeToTarget: "N/A",
         confidenceScore: 0,
         entryType: "LIMIT",
         marketRegime,
@@ -884,10 +916,10 @@ serve(async (req) => {
         trendAlignment: "N/A",
         filtersApplied: allFiltersApplied,
         filtersPassed: [],
-        filtersSkipped: ["Capital Protection Mode active"],
-        reasoning: `CAPITAL PROTECTION MODE. ${systemPerformance.capitalProtectionReason}. Re-evaluating every hour. Capital protection > trade frequency.`,
+        filtersSkipped: ["Capital Protection Mode - 24h pause"],
+        reasoning: `CAPITAL PROTECTION MODE. ${systemPerformance.capitalProtectionReason}. Re-evaluating market conditions in ${formatTimeRemaining(nextReevaluate)}. Probability first > trade frequency.`,
         updatedAt: payload.updatedAt,
-        nextScanIn: formatTimeRemaining(TRADING_CONFIG.CAPITAL_PROTECTION_REEVALUATE),
+        nextScanIn: formatTimeRemaining(TRADING_CONFIG.CAPITAL_PROTECTION_HOURS),
         timeUntilNextAction: formatTimeRemaining(nextReevaluate),
         systemPerformance,
         activeTrade: null,
@@ -899,9 +931,9 @@ serve(async (req) => {
       });
     }
 
-    // ═══════ STATE: TRADE_ACTIVE - Monitor existing trade ═══════
+    // ═══════ STATE: TRADE_ACTIVE - Monitor existing trade (every 15 min) ═══════
     if ((systemPerformance.currentState === 'TRADE_ACTIVE' || systemPerformance.currentState === 'TRADE_READY') && systemPerformance.activeTradeId) {
-      console.log("═══ TRADE ACTIVE - MONITORING ═══");
+      console.log("═══ TRADE ACTIVE - MONITORING (15m interval) ═══");
       
       const activeTrade = await fetchActiveTrade(supabase, systemPerformance.activeTradeId);
       
@@ -911,36 +943,33 @@ serve(async (req) => {
           current_state: 'COOLDOWN',
           active_trade_id: null,
           last_trade_closed_at: new Date().toISOString(),
-          cooldown_ends_at: new Date(Date.now() + TRADING_CONFIG.COOLDOWN_MIN_MINUTES * 60000).toISOString()
+          cooldown_ends_at: new Date(Date.now() + TRADING_CONFIG.COOLDOWN_MIN_HOURS * 3600000).toISOString()
         });
         systemPerformance.currentState = 'COOLDOWN';
       } else {
         const tradedCoin = coins.find(c => c.id === activeTrade.coinId);
         const currentPrice = tradedCoin?.currentPrice || activeTrade.entryPrice;
-        const timeInTrade = (Date.now() - new Date(activeTrade.createdAt).getTime()) / 60000;
-        const minutesUntilTimeout = TRADING_CONFIG.ENTRY_TIMEOUT_MINUTES - timeInTrade;
+        const hoursInTrade = (Date.now() - new Date(activeTrade.createdAt).getTime()) / 3600000;
+        const hoursUntilTimeout = TRADING_CONFIG.ENTRY_TIMEOUT_HOURS - hoursInTrade;
         
-        // ═══════ ENTRY TIMEOUT CHECK ═══════
-        // If entry price is not reached within 45 minutes, mark as NOT_EXECUTED
+        // ═══════ ENTRY TIMEOUT CHECK (24 hours for swing) ═══════
         if (!activeTrade.entryFilled && activeTrade.entryType === 'LIMIT') {
           const entryReached = activeTrade.action === 'BUY'
             ? currentPrice <= activeTrade.entryPrice
             : currentPrice >= activeTrade.entryPrice;
           
           if (entryReached) {
-            // Entry filled - update the trade
             activeTrade.entryFilled = true;
             await supabaseAdmin
               .from('trade_history')
               .update({ 
-                reasoning: activeTrade.action === 'BUY' ? 'LIMIT FILLED' : 'LIMIT FILLED',
+                reasoning: `LIMIT FILLED at $${currentPrice.toFixed(2)}`,
                 last_monitored_at: new Date().toISOString() 
               })
               .eq('id', activeTrade.id);
             console.log(`Entry FILLED at $${currentPrice}`);
-          } else if (timeInTrade >= TRADING_CONFIG.ENTRY_TIMEOUT_MINUTES) {
-            // Timeout - mark as NOT_EXECUTED
-            console.log(`Entry TIMEOUT after ${TRADING_CONFIG.ENTRY_TIMEOUT_MINUTES}m - marking as NOT_EXECUTED`);
+          } else if (hoursInTrade >= TRADING_CONFIG.ENTRY_TIMEOUT_HOURS) {
+            console.log("Entry timeout - marking as NOT_EXECUTED");
             
             await closeTrade(supabaseAdmin, activeTrade.id, 'NOT_EXECUTED', currentPrice, activeTrade.entryPrice, activeTrade.action);
             
@@ -950,7 +979,7 @@ serve(async (req) => {
               last_scan_at: new Date().toISOString()
             });
             
-            const result: TradeResult = {
+            const notExecutedResult: TradeResult = {
               coinId: activeTrade.coinId,
               coinName: activeTrade.coinName,
               coinSymbol: activeTrade.coinSymbol,
@@ -961,10 +990,11 @@ serve(async (req) => {
               entryPrice: activeTrade.entryPrice,
               targetPrice: activeTrade.targetPrice,
               stopLoss: activeTrade.stopLoss,
-              targetPercent: 0,
-              riskPercent: 0,
-              riskReward: 0,
-              score: 0,
+              targetPercent: Math.abs((activeTrade.targetPrice - activeTrade.entryPrice) / activeTrade.entryPrice * 100),
+              riskPercent: Math.abs((activeTrade.entryPrice - activeTrade.stopLoss) / activeTrade.entryPrice * 100),
+              riskReward: Math.abs((activeTrade.targetPrice - activeTrade.entryPrice) / (activeTrade.entryPrice - activeTrade.stopLoss)),
+              probabilityScore: 0,
+              expectedTimeToTarget: "N/A",
               confidenceScore: 0,
               entryType: activeTrade.entryType,
               marketRegime,
@@ -978,20 +1008,20 @@ serve(async (req) => {
               volume24h: tradedCoin?.volume24h || 0,
               marketCap: tradedCoin?.marketCap || 0,
               marketCapRank: tradedCoin?.marketCapRank || 0,
-              trendAlignment: "TIMEOUT",
+              trendAlignment: "NOT_EXECUTED",
               filtersApplied: [],
               filtersPassed: [],
               filtersSkipped: [],
-              reasoning: `Entry not reached within ${TRADING_CONFIG.ENTRY_TIMEOUT_MINUTES} minutes. Trade cancelled - NOT_EXECUTED. A trade that cannot execute is worse than no trade.`,
+              reasoning: `Trade NOT EXECUTED. Entry price $${activeTrade.entryPrice.toFixed(2)} not reached within ${TRADING_CONFIG.ENTRY_TIMEOUT_HOURS}h timeout. Missing a trade is acceptable. Resuming scan.`,
               updatedAt: payload.updatedAt,
-              nextScanIn: formatTimeRemaining(TRADING_CONFIG.SCAN_INTERVAL),
-              timeUntilNextAction: "Resuming scan immediately",
+              nextScanIn: formatTimeRemaining(TRADING_CONFIG.SCAN_INTERVAL / 60),
+              timeUntilNextAction: "Resuming scan",
               systemPerformance,
               activeTrade: null,
               tradeProgress: null
             };
             
-            return new Response(JSON.stringify(result), {
+            return new Response(JSON.stringify(notExecutedResult), {
               headers: { ...corsHeaders, "Content-Type": "application/json" }
             });
           }
@@ -1013,7 +1043,7 @@ serve(async (req) => {
           ? ((currentPrice - activeTrade.stopLoss) / currentPrice) * 100
           : ((activeTrade.stopLoss - currentPrice) / currentPrice) * 100;
         
-        // Check SL/TP hit (only if entry is filled)
+        // Check SL/TP hit - DO NOT EXIT EARLY
         let tradeResult: 'SUCCESS' | 'FAILED' | null = null;
         
         if (entryFilled) {
@@ -1037,11 +1067,13 @@ serve(async (req) => {
           const newTotal = systemPerformance.totalTrades + 1;
           const newAccuracy = newTotal > 0 ? (newSuccessful / newTotal) * 100 : 0;
           
+          const rMultiple = pnl / Math.abs((activeTrade.entryPrice - activeTrade.stopLoss) / activeTrade.entryPrice * 100);
+          
           await updateSystemState(supabaseAdmin, systemPerformance.id, {
             current_state: 'TRADE_CLOSED',
             active_trade_id: null,
             last_trade_closed_at: new Date().toISOString(),
-            cooldown_ends_at: new Date(Date.now() + TRADING_CONFIG.COOLDOWN_MIN_MINUTES * 60000).toISOString(),
+            cooldown_ends_at: new Date(Date.now() + TRADING_CONFIG.COOLDOWN_MIN_HOURS * 3600000).toISOString(),
             consecutive_losses: newConsecutiveLosses,
             successful_trades: newSuccessful,
             failed_trades: newFailed,
@@ -1051,7 +1083,7 @@ serve(async (req) => {
             last_trade_exit_price: currentPrice,
             capital_protection_enabled: newConsecutiveLosses >= TRADING_CONFIG.MAX_CONSECUTIVE_LOSSES,
             capital_protection_reason: newConsecutiveLosses >= TRADING_CONFIG.MAX_CONSECUTIVE_LOSSES 
-              ? `${newConsecutiveLosses} consecutive losses` 
+              ? `${newConsecutiveLosses} consecutive losses - 24h pause` 
               : null
           });
           
@@ -1069,7 +1101,8 @@ serve(async (req) => {
             targetPercent: Math.abs((activeTrade.targetPrice - activeTrade.entryPrice) / activeTrade.entryPrice * 100),
             riskPercent: Math.abs((activeTrade.entryPrice - activeTrade.stopLoss) / activeTrade.entryPrice * 100),
             riskReward: Math.abs((activeTrade.targetPrice - activeTrade.entryPrice) / (activeTrade.entryPrice - activeTrade.stopLoss)),
-            score: 0,
+            probabilityScore: 0,
+            expectedTimeToTarget: "N/A",
             confidenceScore: 0,
             entryType: activeTrade.entryType,
             marketRegime,
@@ -1087,9 +1120,9 @@ serve(async (req) => {
             filtersApplied: [],
             filtersPassed: [],
             filtersSkipped: [],
-            reasoning: `Trade CLOSED: ${tradeResult}. ${tradeResult === 'SUCCESS' ? 'Target' : 'Stop loss'} hit at $${currentPrice.toFixed(2)}. P&L: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}%. Entering cooldown.`,
+            reasoning: `Trade CLOSED: ${tradeResult}. ${tradeResult === 'SUCCESS' ? 'Target' : 'Stop loss'} hit at $${currentPrice.toFixed(2)}. P&L: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}% (${rMultiple.toFixed(1)}R). Duration: ${formatTimeRemaining(hoursInTrade)}. Entering cooldown.`,
             updatedAt: payload.updatedAt,
-            nextScanIn: formatTimeRemaining(TRADING_CONFIG.COOLDOWN_MIN_MINUTES),
+            nextScanIn: formatTimeRemaining(TRADING_CONFIG.COOLDOWN_MIN_HOURS),
             timeUntilNextAction: "Entering cooldown",
             systemPerformance: {
               ...systemPerformance,
@@ -1104,9 +1137,9 @@ serve(async (req) => {
               currentPnL: pnl,
               distanceToTarget: 0,
               distanceToStop: 0,
-              timeInTrade,
+              timeInTrade: hoursInTrade,
               entryFilled: true,
-              minutesUntilTimeout: 0
+              hoursUntilTimeout: 0
             }
           };
           
@@ -1136,7 +1169,8 @@ serve(async (req) => {
           targetPercent: Math.abs((activeTrade.targetPrice - activeTrade.entryPrice) / activeTrade.entryPrice * 100),
           riskPercent: Math.abs((activeTrade.entryPrice - activeTrade.stopLoss) / activeTrade.entryPrice * 100),
           riskReward: Math.abs((activeTrade.targetPrice - activeTrade.entryPrice) / (activeTrade.entryPrice - activeTrade.stopLoss)),
-          score: 0,
+          probabilityScore: 0,
+          expectedTimeToTarget: "Monitoring",
           confidenceScore: 0,
           entryType: activeTrade.entryType,
           marketRegime,
@@ -1150,15 +1184,15 @@ serve(async (req) => {
           volume24h: tradedCoin?.volume24h || 0,
           marketCap: tradedCoin?.marketCap || 0,
           marketCapRank: tradedCoin?.marketCapRank || 0,
-          trendAlignment: "MONITORING",
+          trendAlignment: "HOLDING",
           filtersApplied: [],
           filtersPassed: [],
           filtersSkipped: [],
           reasoning: entryFilled 
-            ? `MONITORING ${activeTrade.action} ${activeTrade.coinSymbol} | P&L: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}% | Target: ${distanceToTarget.toFixed(2)}% away | Stop: ${distanceToStop.toFixed(2)}% buffer`
-            : `WAITING FOR ENTRY | Limit order at $${activeTrade.entryPrice.toFixed(2)} | Current: $${currentPrice.toFixed(2)} | Timeout in ${minutesUntilTimeout.toFixed(0)}m`,
+            ? `HOLDING ${activeTrade.action} ${activeTrade.coinSymbol} | P&L: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}% | Target: ${distanceToTarget.toFixed(2)}% away | Stop: ${distanceToStop.toFixed(2)}% buffer | Duration: ${formatTimeRemaining(hoursInTrade)}`
+            : `WAITING FOR ENTRY | Limit order at $${activeTrade.entryPrice.toFixed(2)} | Current: $${currentPrice.toFixed(2)} | Timeout in ${formatTimeRemaining(hoursUntilTimeout)}`,
           updatedAt: payload.updatedAt,
-          nextScanIn: formatTimeRemaining(TRADING_CONFIG.TRADE_MONITOR_INTERVAL),
+          nextScanIn: `${TRADING_CONFIG.TRADE_MONITOR_INTERVAL}m`,
           timeUntilNextAction: `Monitoring every ${TRADING_CONFIG.TRADE_MONITOR_INTERVAL}m`,
           systemPerformance,
           activeTrade,
@@ -1166,9 +1200,9 @@ serve(async (req) => {
             currentPnL: pnl,
             distanceToTarget,
             distanceToStop,
-            timeInTrade,
+            timeInTrade: hoursInTrade,
             entryFilled,
-            minutesUntilTimeout: Math.max(0, minutesUntilTimeout)
+            hoursUntilTimeout: Math.max(0, hoursUntilTimeout)
           }
         };
         
@@ -1178,16 +1212,15 @@ serve(async (req) => {
       }
     }
 
-    // ═══════ STATE: COOLDOWN or TRADE_CLOSED - Check if we can exit ═══════
+    // ═══════ STATE: COOLDOWN or TRADE_CLOSED ═══════
     if (systemPerformance.currentState === 'COOLDOWN' || systemPerformance.currentState === 'TRADE_CLOSED') {
       console.log("═══ COOLDOWN STATE ═══");
       
-      const btcPrice = coins.find(c => c.symbol.toLowerCase() === 'btc')?.currentPrice || null;
-      const cooldownCheck = checkCooldownExit(systemPerformance, whaleData, btcPrice);
+      const cooldownCheck = checkCooldownExit(systemPerformance, whaleData);
       
       if (!cooldownCheck.canExit) {
         const cooldownEnd = systemPerformance.cooldownEndsAt ? new Date(systemPerformance.cooldownEndsAt) : new Date();
-        const minutesLeft = Math.max(0, (cooldownEnd.getTime() - Date.now()) / 60000);
+        const hoursLeft = Math.max(0, (cooldownEnd.getTime() - Date.now()) / 3600000);
         
         const result: TradeResult = {
           coinId: "",
@@ -1203,7 +1236,8 @@ serve(async (req) => {
           targetPercent: 0,
           riskPercent: 0,
           riskReward: 0,
-          score: 0,
+          probabilityScore: 0,
+          expectedTimeToTarget: "N/A",
           confidenceScore: 0,
           entryType: "LIMIT",
           marketRegime,
@@ -1221,9 +1255,9 @@ serve(async (req) => {
           filtersApplied: allFiltersApplied,
           filtersPassed: [],
           filtersSkipped: ["Cooldown active"],
-          reasoning: `COOLDOWN active. ${cooldownCheck.reason}. Data-based cooldown to avoid duplicated signals and post-event noise.`,
+          reasoning: `COOLDOWN active. ${cooldownCheck.reason}. Trade less, but trade better.`,
           updatedAt: payload.updatedAt,
-          nextScanIn: formatTimeRemaining(minutesLeft),
+          nextScanIn: formatTimeRemaining(hoursLeft),
           timeUntilNextAction: cooldownCheck.reason,
           systemPerformance,
           activeTrade: null,
@@ -1244,37 +1278,34 @@ serve(async (req) => {
       systemPerformance.currentState = 'WAITING';
     }
 
-    // ═══════ STATE: WAITING - Scan for new opportunities ═══════
-    console.log("═══ WAITING STATE - SCANNING ═══");
-    console.log(`Market Regime: ${marketRegime} | Min Score Required: ${minScore}`);
+    // ═══════ STATE: WAITING - Scan for opportunities (every 1 hour) ═══════
+    console.log("═══ WAITING STATE - SCANNING (1h interval) ═══");
+    console.log(`Market Regime: ${marketRegime} | Min Probability Required: ${TRADING_CONFIG.MIN_PROBABILITY_SCORE}%`);
     
     await updateSystemState(supabaseAdmin, systemPerformance.id, {
       last_scan_at: new Date().toISOString(),
       current_state: 'WAITING'
     });
 
-    // High volatility check
-    if (whaleData && whaleData.volatilityState === 'high') {
-      console.log("High volatility detected - being extra cautious");
-    }
-
-    let bestTrade: TradeResult | null = null;
-    let highestScore = 0;
+    // ═══════ 3-STAGE SELECTION PROCESS ═══════
+    const qualifiedOpportunities: ScoredOpportunity[] = [];
 
     for (const coin of eligibleCoins) {
       if (coin.currentPrice <= 0) continue;
       
-      const { passed, results } = applyTradingFilters(coin, tightenFilters);
-      const filtersPassed = results.filter(r => r.passed).map(r => r.reason);
-      const filtersSkipped = results.filter(r => !r.passed).map(r => r.reason);
+      // STAGE 1: Setup Filtering
+      const filterResult = passesSetupFiltering(coin, marketRegime);
+      if (!filterResult.passes) {
+        console.log(`${coin.symbol}: Failed filters - ${filterResult.reasons[0]}`);
+        continue;
+      }
       
-      if (!passed) continue;
-      
-      const hasStrongMomentum = detectStrongMomentum(coin);
-      const setup = calculateTradeSetup(coin, marketRegime, hasStrongMomentum);
-      
-      if (setup.action === "NO_TRADE") continue;
-      if (setup.riskReward < TRADING_CONFIG.MIN_RISK_REWARD) continue;
+      // Calculate trade setup
+      const setup = calculateSwingTradeSetup(coin, marketRegime);
+      if (!setup || setup.action === "NO_TRADE") {
+        console.log(`${coin.symbol}: No valid setup`);
+        continue;
+      }
       
       // Whale alignment check
       const whaleAligned = !whaleData || whaleData.intent === 'neutral' ||
@@ -1282,71 +1313,46 @@ serve(async (req) => {
         (setup.action === "SELL" && whaleData.intent === 'distributing');
       
       if (whaleData && whaleData.confidence >= 70 && !whaleAligned) {
-        console.log(`${coin.symbol}: Skipped - whale intent mismatch`);
+        console.log(`${coin.symbol}: Whale intent mismatch`);
         continue;
       }
       
-      const score = scoreOpportunity(coin, marketRegime, setup, whaleData?.intent || null, whaleData?.confidence || null);
+      // STAGE 2: Probability Scoring
+      const probabilityScore = calculateProbabilityScore(
+        coin, marketRegime, setup.action, 
+        whaleData?.intent || null, whaleData?.confidence || null
+      );
       
-      // Check minimum score threshold
-      if (score < minScore) {
-        console.log(`${coin.symbol}: Score ${score} < ${minScore} threshold`);
+      if (probabilityScore < TRADING_CONFIG.MIN_PROBABILITY_SCORE) {
+        console.log(`${coin.symbol}: Probability ${probabilityScore}% < ${TRADING_CONFIG.MIN_PROBABILITY_SCORE}% threshold`);
         continue;
       }
       
-      if (score > highestScore) {
-        highestScore = score;
-        
-        const confidenceScore = Math.min(95, score);
-        
-        bestTrade = {
-          coinId: coin.id,
-          coinName: coin.name,
-          coinSymbol: coin.symbol.toUpperCase(),
-          coinImage: coin.image,
-          action: setup.action,
-          status: "TRADE_READY",
-          currentPrice: coin.currentPrice,
-          entryPrice: setup.entryPrice,
-          targetPrice: setup.targetPrice,
-          stopLoss: setup.stopLoss,
-          targetPercent: setup.targetPercent,
-          riskPercent: setup.riskPercent,
-          riskReward: Number(setup.riskReward.toFixed(2)),
-          score,
-          confidenceScore,
-          entryType: setup.entryType,
-          marketRegime,
-          whaleIntent: whaleData?.intent || null,
-          whaleConfidence: whaleData?.confidence || null,
-          rsi14: coin.rsi14,
-          atr14: coin.atr14,
-          priceChange1h: coin.change1h,
-          priceChange24h: coin.change24h,
-          priceChange7d: coin.change7d,
-          volume24h: coin.volume24h,
-          marketCap: coin.marketCap,
-          marketCapRank: coin.marketCapRank,
-          trendAlignment: setup.trendDirection,
-          filtersApplied: allFiltersApplied,
-          filtersPassed,
-          filtersSkipped,
-          reasoning: "",
-          updatedAt: payload.updatedAt,
-          nextScanIn: formatTimeRemaining(TRADING_CONFIG.SCAN_INTERVAL),
-          timeUntilNextAction: "Trade signal ready",
-          systemPerformance,
-          activeTrade: null,
-          tradeProgress: null
-        };
-        
-        console.log(`${coin.symbol}: QUALIFIED - ${setup.action} score ${score}, entry ${setup.entryType}`);
-      }
+      // STAGE 3: Speed Optimization
+      const expectedTimeToTarget = calculateExpectedTimeToTarget(coin, setup.targetPercent);
+      
+      qualifiedOpportunities.push({
+        coin,
+        action: setup.action,
+        probabilityScore,
+        expectedTimeToTarget,
+        entryPrice: setup.entryPrice,
+        targetPrice: setup.targetPrice,
+        stopLoss: setup.stopLoss,
+        targetPercent: setup.targetPercent,
+        riskPercent: setup.riskPercent,
+        riskReward: setup.riskReward,
+        trendDirection: setup.trendDirection,
+        reasonsForSelection: filterResult.reasons,
+        filtersPassedList: filterResult.reasons
+      });
+      
+      console.log(`${coin.symbol}: QUALIFIED - Prob: ${probabilityScore}% | ETA: ${formatTimeRemaining(expectedTimeToTarget)} | RR: ${setup.riskReward.toFixed(1)}`);
     }
 
-    // No valid setup found
-    if (!bestTrade) {
-      console.log("No qualifying trade found - will rescan in 15 minutes");
+    // No qualified opportunities
+    if (qualifiedOpportunities.length === 0) {
+      console.log("No qualifying trade found - will rescan in 1 hour");
       
       const result: TradeResult = {
         coinId: "",
@@ -1362,7 +1368,8 @@ serve(async (req) => {
         targetPercent: 0,
         riskPercent: 0,
         riskReward: 0,
-        score: 0,
+        probabilityScore: 0,
+        expectedTimeToTarget: "N/A",
         confidenceScore: 0,
         entryType: "LIMIT",
         marketRegime,
@@ -1379,11 +1386,11 @@ serve(async (req) => {
         trendAlignment: "N/A",
         filtersApplied: allFiltersApplied,
         filtersPassed: [],
-        filtersSkipped: [`No coins scored >= ${minScore} (${marketRegime} regime)`],
-        reasoning: `WAITING. No qualifying trade found. Scanned ${eligibleCoins.length} coins in ${marketRegime} regime. Min score required: ${minScore}. If no valid setup exists, explicitly return WAITING. Data freshness > over-scanning.`,
+        filtersSkipped: [`No coins passed ${TRADING_CONFIG.MIN_PROBABILITY_SCORE}% probability threshold`],
+        reasoning: `WAITING. No qualifying trade found. Scanned ${eligibleCoins.length} coins in ${marketRegime} regime. Min probability: ${TRADING_CONFIG.MIN_PROBABILITY_SCORE}%. Missing trades is better than bad trades. Trade less, but trade better.`,
         updatedAt: payload.updatedAt,
-        nextScanIn: formatTimeRemaining(TRADING_CONFIG.SCAN_INTERVAL),
-        timeUntilNextAction: `Auto-rescan in ${TRADING_CONFIG.SCAN_INTERVAL}m`,
+        nextScanIn: formatTimeRemaining(TRADING_CONFIG.SCAN_INTERVAL / 60),
+        timeUntilNextAction: `Auto-rescan in ${TRADING_CONFIG.SCAN_INTERVAL / 60}h`,
         systemPerformance,
         activeTrade: null,
         tradeProgress: null
@@ -1394,18 +1401,76 @@ serve(async (req) => {
       });
     }
 
-    // Trade found - create record and activate
-    const bestCoin = eligibleCoins.find(c => c.id === bestTrade!.coinId)!;
+    // ═══════ SELECT BEST: Highest probability, then fastest ETA ═══════
+    qualifiedOpportunities.sort((a, b) => {
+      // Primary: Highest probability
+      if (b.probabilityScore !== a.probabilityScore) {
+        return b.probabilityScore - a.probabilityScore;
+      }
+      // Secondary: Fastest expected time to target
+      return a.expectedTimeToTarget - b.expectedTimeToTarget;
+    });
+
+    const bestOpportunity = qualifiedOpportunities[0];
+    const otherOptions = qualifiedOpportunities.slice(1, 4).map(o => 
+      `${o.coin.symbol} (${o.probabilityScore}%, ${formatTimeRemaining(o.expectedTimeToTarget)})`
+    ).join(', ');
+
     const whaleInfo = whaleData?.intent && whaleData.intent !== 'neutral' 
       ? ` Whale: ${whaleData.intent}.` 
       : '';
     
-    bestTrade.reasoning = `${bestCoin.name} identified as ${bestTrade.trendAlignment}. ` +
-      `${bestTrade.entryType} entry at $${bestTrade.entryPrice.toFixed(2)}. ` +
-      `Target: +${bestTrade.targetPercent.toFixed(2)}%, Stop: -${bestTrade.riskPercent.toFixed(2)}%. ` +
-      `Score: ${bestTrade.score}/100. RSI: ${bestCoin.rsi14.toFixed(1)}.${whaleInfo} ` +
-      `Market regime: ${marketRegime}. Execution realism > signal perfection.`;
+    const reasoning = `${bestOpportunity.coin.name} selected. ` +
+      `Probability: ${bestOpportunity.probabilityScore}%. ` +
+      `Expected time to target: ${formatTimeRemaining(bestOpportunity.expectedTimeToTarget)}. ` +
+      `Target: +${bestOpportunity.targetPercent.toFixed(1)}% (${bestOpportunity.riskReward.toFixed(1)}R). ` +
+      `Stop: -${bestOpportunity.riskPercent.toFixed(1)}%.${whaleInfo} ` +
+      `${otherOptions ? `Other candidates: ${otherOptions}.` : ''} ` +
+      `Probability first. Speed second.`;
 
+    const bestTrade: TradeResult = {
+      coinId: bestOpportunity.coin.id,
+      coinName: bestOpportunity.coin.name,
+      coinSymbol: bestOpportunity.coin.symbol.toUpperCase(),
+      coinImage: bestOpportunity.coin.image,
+      action: bestOpportunity.action,
+      status: "TRADE_READY",
+      currentPrice: bestOpportunity.coin.currentPrice,
+      entryPrice: bestOpportunity.entryPrice,
+      targetPrice: bestOpportunity.targetPrice,
+      stopLoss: bestOpportunity.stopLoss,
+      targetPercent: bestOpportunity.targetPercent,
+      riskPercent: bestOpportunity.riskPercent,
+      riskReward: Number(bestOpportunity.riskReward.toFixed(2)),
+      probabilityScore: bestOpportunity.probabilityScore,
+      expectedTimeToTarget: formatTimeRemaining(bestOpportunity.expectedTimeToTarget),
+      confidenceScore: Math.min(95, bestOpportunity.probabilityScore),
+      entryType: Math.abs(bestOpportunity.coin.change1h) < 0.5 ? "IMMEDIATE" : "LIMIT",
+      marketRegime,
+      whaleIntent: whaleData?.intent || null,
+      whaleConfidence: whaleData?.confidence || null,
+      rsi14: bestOpportunity.coin.rsi14,
+      atr14: bestOpportunity.coin.atr14,
+      priceChange1h: bestOpportunity.coin.change1h,
+      priceChange24h: bestOpportunity.coin.change24h,
+      priceChange7d: bestOpportunity.coin.change7d,
+      volume24h: bestOpportunity.coin.volume24h,
+      marketCap: bestOpportunity.coin.marketCap,
+      marketCapRank: bestOpportunity.coin.marketCapRank,
+      trendAlignment: bestOpportunity.trendDirection,
+      filtersApplied: allFiltersApplied,
+      filtersPassed: bestOpportunity.filtersPassedList,
+      filtersSkipped: [],
+      reasoning,
+      updatedAt: payload.updatedAt,
+      nextScanIn: formatTimeRemaining(TRADING_CONFIG.SCAN_INTERVAL / 60),
+      timeUntilNextAction: "Trade signal ready",
+      systemPerformance,
+      activeTrade: null,
+      tradeProgress: null
+    };
+
+    // Create trade record and activate
     const tradeId = await createTradeRecord(supabaseAdmin, bestTrade);
     
     if (tradeId) {
@@ -1433,7 +1498,7 @@ serve(async (req) => {
       bestTrade.status = "TRADE_ACTIVE";
       bestTrade.timeUntilNextAction = bestTrade.entryType === 'IMMEDIATE'
         ? `Monitoring every ${TRADING_CONFIG.TRADE_MONITOR_INTERVAL}m`
-        : `Waiting for entry fill (timeout: ${TRADING_CONFIG.ENTRY_TIMEOUT_MINUTES}m)`;
+        : `Waiting for entry fill (timeout: ${TRADING_CONFIG.ENTRY_TIMEOUT_HOURS}h)`;
       
       bestTrade.tradeProgress = {
         currentPnL: 0,
@@ -1441,11 +1506,11 @@ serve(async (req) => {
         distanceToStop: bestTrade.riskPercent,
         timeInTrade: 0,
         entryFilled: bestTrade.entryType === 'IMMEDIATE',
-        minutesUntilTimeout: TRADING_CONFIG.ENTRY_TIMEOUT_MINUTES
+        hoursUntilTimeout: TRADING_CONFIG.ENTRY_TIMEOUT_HOURS
       };
     }
 
-    console.log(`═══ TRADE EXECUTED: ${bestTrade.action} ${bestTrade.coinName} @ $${bestTrade.entryPrice} (${bestTrade.entryType}) ═══`);
+    console.log(`═══ TRADE EXECUTED: ${bestTrade.action} ${bestTrade.coinName} @ $${bestTrade.entryPrice.toFixed(2)} | Prob: ${bestTrade.probabilityScore}% | ETA: ${bestTrade.expectedTimeToTarget} ═══`);
 
     return new Response(JSON.stringify(bestTrade), {
       headers: { ...corsHeaders, "Content-Type": "application/json" }
