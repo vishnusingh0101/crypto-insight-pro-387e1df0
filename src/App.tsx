@@ -7,6 +7,7 @@ import Index from "./pages/Index";
 import CoinAnalysis from "./pages/CoinAnalysis";
 import NewsDetail from "./pages/NewsDetail";
 import WhaleWatch from "./pages/WhaleWatch";
+import TradeHistory from "./pages/TradeHistory";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -22,6 +23,7 @@ const App = () => (
           <Route path="/analysis/:coinId" element={<CoinAnalysis />} />
           <Route path="/news/:newsId" element={<NewsDetail />} />
           <Route path="/whale-watch" element={<WhaleWatch />} />
+          <Route path="/trade-history" element={<TradeHistory />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
