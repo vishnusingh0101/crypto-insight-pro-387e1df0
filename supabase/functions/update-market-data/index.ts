@@ -111,7 +111,23 @@ interface EnrichedCoin {
   volumeToMcap: number;
 }
 
-serve(async () => {
+serve(async (req) => {
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-api-key' } });
+  }
+
+  // API Key authentication - this function writes to storage bucket
+  const apiKey = req.headers.get('x-api-key');
+  const internalApiKey = Deno.env.get('INTERNAL_API_KEY');
+  if (!internalApiKey || apiKey !== internalApiKey) {
+    console.error('Unauthorized access attempt to update-market-data');
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
+      status: 401, 
+      headers: { 'Content-Type': 'application/json' } 
+    });
+  }
+
   try {
     console.log("update-market-data: starting run");
 
