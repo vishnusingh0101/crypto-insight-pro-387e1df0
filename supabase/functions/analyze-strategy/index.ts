@@ -11,6 +11,17 @@ serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
+  // API Key authentication - this function writes to database and uses paid AI API
+  const apiKey = req.headers.get('x-api-key');
+  const internalApiKey = Deno.env.get('INTERNAL_API_KEY');
+  if (!internalApiKey || apiKey !== internalApiKey) {
+    console.error('Unauthorized access attempt to analyze-strategy');
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
+      status: 401, 
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+    });
+  }
+
   try {
     console.log("Starting strategy analysis with AI...");
 

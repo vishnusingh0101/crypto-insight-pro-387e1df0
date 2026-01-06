@@ -55,6 +55,17 @@ serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
+  // API Key authentication - this function writes to database and storage
+  const apiKey = req.headers.get('x-api-key');
+  const internalApiKey = Deno.env.get('INTERNAL_API_KEY');
+  if (!internalApiKey || apiKey !== internalApiKey) {
+    console.error('Unauthorized access attempt to nightly-data-collector');
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
+      status: 401, 
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+    });
+  }
+
   const startTime = Date.now();
   const endTime = startTime + (COLLECTION_DURATION_MINUTES * 60 * 1000);
   
