@@ -629,6 +629,113 @@ function calculateExpectedTimeToTarget(coin: EnrichedCoin, targetPercent: number
   return Math.max(6, Math.min(72, targetPercent / (dailyMove / 24)));
 }
 
+// ═══════ AI-POWERED TRADE ANALYSIS ═══════
+
+async function analyzeWithAI(
+  opportunities: ScoredOpportunity[],
+  marketRegime: MarketRegime,
+  whaleIntent: WhaleIntent | null,
+  systemPerformance: DerivedCounters
+): Promise<{
+  selectedIndex: number;
+  reasoning: string;
+  aiConfidenceBoost: number;
+  riskWarnings: string[];
+} | null> {
+  try {
+    const lovableApiKey = Deno.env.get('LOVABLE_API_KEY');
+    if (!lovableApiKey) {
+      console.log("LOVABLE_API_KEY not set, skipping AI analysis");
+      return null;
+    }
+
+    const top5 = opportunities.slice(0, 5);
+    const prompt = `You are an elite crypto swing trading analyst. Analyze these potential trades and select the SINGLE BEST opportunity.
+
+MARKET CONDITIONS:
+- Regime: ${marketRegime}
+- Whale Activity: ${whaleIntent || 'neutral'}
+- Recent Performance: ${systemPerformance.successfulTrades}W / ${systemPerformance.failedTrades}L (${systemPerformance.accuracyPercent.toFixed(1)}%)
+- Consecutive Losses: ${systemPerformance.consecutiveLosses}
+
+TRADING OPPORTUNITIES (ranked by algorithm):
+${top5.map((opp, i) => `
+${i + 1}. ${opp.coin.symbol.toUpperCase()} - ${opp.action}
+   - Entry: $${opp.entryPrice.toFixed(4)} | Target: +${opp.targetPercent.toFixed(1)}% | Stop: -${opp.riskPercent.toFixed(1)}%
+   - R:R Ratio: ${opp.riskReward.toFixed(2)}
+   - Algorithm Score: ${opp.probabilityScore}%
+   - RSI(14): ${opp.coin.rsi14.toFixed(1)} | ATR(14): ${(opp.coin.atr14 / opp.coin.currentPrice * 100).toFixed(2)}%
+   - 1h: ${opp.coin.change1h >= 0 ? '+' : ''}${opp.coin.change1h.toFixed(2)}% | 24h: ${opp.coin.change24h >= 0 ? '+' : ''}${opp.coin.change24h.toFixed(2)}% | 7d: ${opp.coin.change7d >= 0 ? '+' : ''}${opp.coin.change7d.toFixed(2)}%
+   - Volume/MCap: ${(opp.coin.volumeToMcap * 100).toFixed(3)}%
+   - Market Cap Rank: #${opp.coin.marketCapRank}
+   - Algorithm Reasons: ${opp.reasonsForSelection.join(', ')}
+`).join('')}
+
+RULES:
+- Quality over quantity - we only take HIGH PROBABILITY trades
+- Consider risk management: ${systemPerformance.consecutiveLosses >= 2 ? 'BE EXTRA CAUTIOUS - multiple recent losses' : 'normal risk tolerance'}
+- In ${marketRegime} regime, prioritize ${marketRegime === 'TREND_UP' || marketRegime === 'DIP_UP' ? 'BUY setups with strong momentum' : marketRegime === 'TREND_DOWN' ? 'SHORT setups with weak bounces' : 'only the clearest setups'}
+- Missing trades is BETTER than bad trades
+
+RESPOND IN EXACTLY THIS JSON FORMAT:
+{
+  "selectedIndex": <0-4 or -1 if none are good enough>,
+  "reasoning": "<2-3 sentences explaining your selection>",
+  "confidenceBoost": <-10 to +10 adjustment to algorithm score>,
+  "riskWarnings": ["<any concerns>"]
+}`;
+
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${lovableApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: [
+          { role: "system", content: "You are a professional crypto trading analyst. Be concise, analytical, and risk-aware. Respond ONLY with valid JSON." },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.3,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error("AI gateway error:", response.status);
+      return null;
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content;
+    
+    if (!content) {
+      console.error("No AI response content");
+      return null;
+    }
+
+    // Parse JSON from response (handle markdown code blocks)
+    let jsonStr = content;
+    if (content.includes('```')) {
+      const match = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+      jsonStr = match ? match[1].trim() : content;
+    }
+    
+    const parsed = JSON.parse(jsonStr);
+    console.log(`AI Analysis: Selected index ${parsed.selectedIndex}, boost: ${parsed.confidenceBoost}`);
+    
+    return {
+      selectedIndex: parsed.selectedIndex,
+      reasoning: parsed.reasoning || "AI analysis complete",
+      aiConfidenceBoost: Math.max(-10, Math.min(10, parsed.confidenceBoost || 0)),
+      riskWarnings: Array.isArray(parsed.riskWarnings) ? parsed.riskWarnings : []
+    };
+  } catch (error) {
+    console.error("AI analysis error:", error);
+    return null;
+  }
+}
+
 // ═══════ WHALE INTELLIGENCE (MOCKED) ═══════
 
 async function fetchWhaleIntelligence(supabaseUrl: string, serviceRoleKey: string): Promise<{
@@ -1214,18 +1321,96 @@ serve(async (req) => {
     }
     
     // ═══════════════════════════════════════════════════════════════════════════
-    // STEP 5: SELECT BEST OPPORTUNITY AND CREATE TRADE
+    // STEP 5: AI-ENHANCED TRADE SELECTION
     // ═══════════════════════════════════════════════════════════════════════════
     
+    // First sort by algorithm score
     qualifiedOpportunities.sort((a, b) => {
       if (b.probabilityScore !== a.probabilityScore) return b.probabilityScore - a.probabilityScore;
       return a.expectedTimeToTarget - b.expectedTimeToTarget;
     });
     
-    const best = qualifiedOpportunities[0];
+    console.log("═══ AI ANALYSIS PHASE ═══");
+    
+    // Run AI analysis on top opportunities
+    const aiAnalysis = await analyzeWithAI(
+      qualifiedOpportunities,
+      marketRegime,
+      whaleData?.intent || null,
+      counters
+    );
+    
+    let selectedIndex = 0;
+    let aiReasoning = "";
+    let aiConfidenceBoost = 0;
+    let aiRiskWarnings: string[] = [];
+    
+    if (aiAnalysis) {
+      if (aiAnalysis.selectedIndex === -1) {
+        // AI rejected all opportunities
+        console.log("AI rejected all opportunities:", aiAnalysis.reasoning);
+        
+        return new Response(JSON.stringify({
+          coinId: "",
+          coinName: "No Trade",
+          coinSymbol: "WAIT",
+          coinImage: "",
+          action: "NO_TRADE",
+          status: "WAITING",
+          currentPrice: 0,
+          entryPrice: 0,
+          targetPrice: 0,
+          stopLoss: 0,
+          targetPercent: 0,
+          riskPercent: 0,
+          riskReward: 0,
+          probabilityScore: 0,
+          expectedTimeToTarget: "N/A",
+          confidenceScore: 0,
+          entryType: "LIMIT",
+          marketRegime,
+          whaleIntent: whaleData?.intent || null,
+          whaleConfidence: whaleData?.confidence || null,
+          rsi14: 0,
+          atr14: 0,
+          priceChange1h: 0,
+          priceChange24h: 0,
+          priceChange7d: 0,
+          volume24h: 0,
+          marketCap: 0,
+          marketCapRank: 0,
+          trendAlignment: "N/A",
+          filtersApplied: [...allFiltersApplied, "AI Analysis"],
+          filtersPassed: [],
+          filtersSkipped: ["AI rejected all setups"],
+          reasoning: `AI ANALYSIS: ${aiAnalysis.reasoning} ${aiAnalysis.riskWarnings.length > 0 ? 'Warnings: ' + aiAnalysis.riskWarnings.join(', ') : ''}`,
+          updatedAt: payload.updatedAt,
+          nextScanIn: `${TRADING_CONFIG.SCAN_INTERVAL_MINUTES}m`,
+          timeUntilNextAction: `Next scan in ${TRADING_CONFIG.SCAN_INTERVAL_MINUTES}m`,
+          systemPerformance: basePerformance,
+          activeTrade: null,
+          tradeProgress: null
+        } as TradeResult), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      }
+      
+      selectedIndex = Math.min(aiAnalysis.selectedIndex, qualifiedOpportunities.length - 1);
+      aiReasoning = aiAnalysis.reasoning;
+      aiConfidenceBoost = aiAnalysis.aiConfidenceBoost;
+      aiRiskWarnings = aiAnalysis.riskWarnings;
+      console.log(`AI selected opportunity #${selectedIndex + 1}: ${qualifiedOpportunities[selectedIndex].coin.symbol}`);
+    } else {
+      console.log("AI analysis unavailable, using algorithm selection");
+    }
+    
+    const best = qualifiedOpportunities[selectedIndex];
     const entryType = Math.abs(best.coin.change1h) < 0.5 ? "IMMEDIATE" : "LIMIT";
     
-    const reasoning = `${best.coin.name} selected. Prob: ${best.probabilityScore}%. ETA: ${formatTimeRemaining(best.expectedTimeToTarget)}. Target: +${best.targetPercent.toFixed(1)}% (${best.riskReward.toFixed(1)}R). Stop: -${best.riskPercent.toFixed(1)}%.`;
+    // Combine algorithm score with AI boost
+    const finalProbabilityScore = Math.min(95, Math.max(0, best.probabilityScore + aiConfidenceBoost));
+    
+    const reasoning = aiReasoning 
+      ? `🤖 AI: ${aiReasoning} | Algo: ${best.coin.name} @ ${best.probabilityScore}%${aiConfidenceBoost !== 0 ? ` (AI: ${aiConfidenceBoost >= 0 ? '+' : ''}${aiConfidenceBoost})` : ''}. Target: +${best.targetPercent.toFixed(1)}% (${best.riskReward.toFixed(1)}R).${aiRiskWarnings.length > 0 ? ' ⚠️ ' + aiRiskWarnings.join(', ') : ''}`
+      : `${best.coin.name} selected. Prob: ${best.probabilityScore}%. ETA: ${formatTimeRemaining(best.expectedTimeToTarget)}. Target: +${best.targetPercent.toFixed(1)}% (${best.riskReward.toFixed(1)}R). Stop: -${best.riskPercent.toFixed(1)}%.`;
     
     const tradeResult: TradeResult = {
       coinId: best.coin.id,
@@ -1241,9 +1426,9 @@ serve(async (req) => {
       targetPercent: best.targetPercent,
       riskPercent: best.riskPercent,
       riskReward: Number(best.riskReward.toFixed(2)),
-      probabilityScore: best.probabilityScore,
+      probabilityScore: finalProbabilityScore,
       expectedTimeToTarget: formatTimeRemaining(best.expectedTimeToTarget),
-      confidenceScore: Math.min(95, best.probabilityScore),
+      confidenceScore: Math.min(95, finalProbabilityScore),
       entryType,
       marketRegime,
       whaleIntent: whaleData?.intent || null,
@@ -1257,9 +1442,9 @@ serve(async (req) => {
       marketCap: best.coin.marketCap,
       marketCapRank: best.coin.marketCapRank,
       trendAlignment: best.trendDirection,
-      filtersApplied: allFiltersApplied,
+      filtersApplied: aiReasoning ? [...allFiltersApplied, "AI Analysis"] : allFiltersApplied,
       filtersPassed: best.filtersPassedList,
-      filtersSkipped: [],
+      filtersSkipped: aiRiskWarnings,
       reasoning,
       updatedAt: payload.updatedAt,
       nextScanIn: `${TRADING_CONFIG.TRADE_MONITOR_INTERVAL}m`,
